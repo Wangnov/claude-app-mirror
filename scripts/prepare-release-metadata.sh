@@ -88,6 +88,9 @@ jq \
   printf '%s  %s\n' "$(sha_of release-manifest.json)" "release-manifest.json"
 } > SHA256SUMS.txt
 
+# Release notes intentionally embed CJK full-width quotes ("…") inside echo
+# strings; SC1111 (unicode quote) is a false positive for this block.
+# shellcheck disable=SC1111
 {
   echo "# Claude 桌面端安装包镜像更新"
   echo
