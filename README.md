@@ -1,3 +1,11 @@
+<p align="center">
+  <img src="./assets/status.svg" alt="Claude App Mirror — mirror pipeline" width="100%">
+</p>
+
+<p align="center">
+  <img src="./assets/logo.png" width="200" alt="claude-app-mirror logo">
+</p>
+
 <h1 align="center">claude-app-mirror</h1>
 
 <p align="center">
@@ -8,8 +16,10 @@
   <a href="https://github.com/Wangnov/claude-app-mirror/releases/latest"><img src="https://img.shields.io/github/release-date/Wangnov/claude-app-mirror?label=updated&logo=github" alt="Latest update time"></a>
   <a href="https://github.com/Wangnov/claude-app-mirror/actions/workflows/mirror.yml"><img src="https://img.shields.io/github/actions/workflow/status/Wangnov/claude-app-mirror/mirror.yml?branch=main&label=mirror&logo=githubactions" alt="Mirror workflow"></a>
   <a href="https://github.com/Wangnov/claude-app-mirror/actions/workflows/mirror.yml"><img src="https://img.shields.io/badge/polling-every%2015%20minutes-2ea44f" alt="15 minute polling"></a>
-  <a href="https://github.com/Wangnov/claude-app-mirror/releases/latest"><img src="https://img.shields.io/badge/macOS-universal-000000?logo=apple" alt="macOS universal"></a>
-  <a href="https://github.com/Wangnov/claude-app-mirror/releases/latest"><img src="https://img.shields.io/badge/Windows-x64%20%7C%20arm64%20MSIX-0078d4?logo=windows" alt="Windows x64 and arm64 MSIX"></a>
+  <a href="https://github.com/Wangnov/claude-app-mirror/releases/latest"><img src="https://img.shields.io/badge/macOS-universal-D97757?logo=apple&logoColor=white" alt="macOS universal"></a>
+  <a href="https://github.com/Wangnov/claude-app-mirror/releases/latest"><img src="https://img.shields.io/badge/Windows-x64%20%7C%20arm64%20MSIX-0078d4?logo=windows&logoColor=white" alt="Windows x64 and arm64 MSIX"></a>
+  <a href="https://linux.do/"><img src="https://img.shields.io/badge/LINUX%20DO-community-f0a020?logo=discourse&logoColor=white" alt="LINUX DO community"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/Wangnov/claude-app-mirror?label=license&color=D97757" alt="License"></a>
 </p>
 
 <p align="center">
