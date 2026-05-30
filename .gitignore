@@ -1,0 +1,10 @@
+dist/
+*.tmp
+*.log
+probe-manifest.json
+release-manifest.json
+release-notes.md
+SHA256SUMS.txt
+node_modules/
+.wrangler/
+.dev.vars

@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "claude-app-mirror-dispatcher",
+  "main": "src/index.js",
+  "compatibility_date": "2026-05-23",
+  "workers_dev": false,
+  "triggers": {
+    "crons": ["7,22,37,52 * * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "GITHUB_OWNER": "Wangnov",
+    "GITHUB_REPO": "claude-app-mirror",
+    "GITHUB_WORKFLOW": "mirror.yml",
+    "GITHUB_REF": "main",
+    "GITHUB_FORCE_RELEASE": "false"
+  },
+  "secrets": {
+    "required": ["GITHUB_TOKEN"]
+  }
+}

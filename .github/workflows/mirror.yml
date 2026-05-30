@@ -1,0 +1,184 @@
+name: Mirror Claude Desktop Installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional release tag. Defaults to a version-derived tag.
+        required: false
+        type: string
+      force_release:
+        description: Publish even when the latest release already matches current sources.
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    - cron: "11 */6 * * *"
+
+permissions:
+  contents: read
+
+env:
+  R2_BUCKET_NAME: claude-app-mirror
+  R2_PUBLIC_BASE_URL: https://claudeapp.agentsmirror.com
+
+concurrency:
+  group: claude-app-mirror
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Probe current version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.probe.outputs.should_release }}
+      release_tag: ${{ steps.probe.outputs.release_tag }}
+      latest_tag: ${{ steps.probe.outputs.latest_tag }}
+      skip_reason: ${{ steps.probe.outputs.skip_reason }}
+      version_summary: ${{ steps.probe.outputs.version_summary }}
+      manifest: ${{ steps.probe.outputs.manifest }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Probe update API
+        id: probe
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORCE_RELEASE: ${{ inputs.force_release || 'false' }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: bash scripts/probe-release.sh
+
+  release:
+    name: Mirror and publish release
+    runs-on: ubuntu-latest
+    needs: probe
+    if: needs.probe.outputs.should_release == 'true'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Restore probe manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > probe-manifest.json <<'JSON'
+          ${{ needs.probe.outputs.manifest }}
+          JSON
+
+      - name: Download installers
+        shell: bash
+        run: bash scripts/download-artifacts.sh dist probe-manifest.json
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/prepare-release-metadata.sh \
+            probe-manifest.json \
+            dist \
+            "$R2_PUBLIC_BASE_URL" \
+            "${{ needs.probe.outputs.release_tag }}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --title "${{ steps.meta.outputs.title }}" \
+            --notes-file release-notes.md \
+            dist/Claude-mac-universal.dmg \
+            dist/Claude-win-x64.msix \
+            dist/Claude-win-arm64.msix \
+            SHA256SUMS.txt \
+            release-manifest.json
+
+      - name: Remove latest links from previous release notes
+        if: needs.probe.outputs.latest_tag != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: bash scripts/remove-latest-links-from-release-notes.sh "${{ needs.probe.outputs.latest_tag }}"
+
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Sync release assets to Cloudflare R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        shell: bash
+        run: |
+          set -euo pipefail
+          mac="dist/Claude-mac-universal.dmg"
+          win_x64="dist/Claude-win-x64.msix"
+          win_arm64="dist/Claude-win-arm64.msix"
+
+          test -f "$mac"
+          test -f "$win_x64"
+          test -f "$win_arm64"
+
+          staging_prefix="staging/${{ steps.meta.outputs.tag }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup_staging() {
+            bash scripts/clear-r2-prefix.sh "$R2_BUCKET_NAME" "$staging_prefix" || true
+          }
+          trap cleanup_staging EXIT
+
+          upload_aliases() {
+            local prefix="$1"
+            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/mac" "$mac" Claude-mac-universal.dmg
+            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-x64" "$win_x64" Claude-win-x64.msix
+            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-arm64" "$win_arm64" Claude-win-arm64.msix
+            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/checksums" SHA256SUMS.txt SHA256SUMS.txt
+            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/manifest" release-manifest.json release-manifest.json
+          }
+
+          upload_aliases "$staging_prefix"
+          aws s3 cp "s3://$R2_BUCKET_NAME/$staging_prefix/manifest" /tmp/r2-staging-manifest.json \
+            --endpoint-url "$R2_S3_ENDPOINT" \
+            --region "${AWS_DEFAULT_REGION:-auto}" \
+            --no-progress
+          cmp release-manifest.json /tmp/r2-staging-manifest.json
+
+          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/mac "$mac" Claude-mac-universal.dmg
+          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-x64 "$win_x64" Claude-win-x64.msix
+          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-arm64 "$win_arm64" Claude-win-arm64.msix
+          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/checksums SHA256SUMS.txt SHA256SUMS.txt
+          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/manifest release-manifest.json release-manifest.json
+
+          curl -fsSL \
+            --retry 5 \
+            --retry-delay 2 \
+            --retry-all-errors \
+            --connect-timeout 20 \
+            --max-time 120 \
+            "$R2_PUBLIC_BASE_URL/latest/manifest?run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            -o /tmp/r2-public-manifest.json
+          cmp release-manifest.json /tmp/r2-public-manifest.json
+
+  no_changes:
+    name: No new version
+    runs-on: ubuntu-latest
+    needs: probe
+    if: needs.probe.outputs.should_release != 'true'
+    steps:
+      - name: Report current state
+        run: |
+          echo "No new Claude desktop version detected."
+          echo "${{ needs.probe.outputs.skip_reason }}"
+          echo "${{ needs.probe.outputs.version_summary }}"
