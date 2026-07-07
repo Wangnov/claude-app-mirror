@@ -1,0 +1,55 @@
+name: Update Download Stats
+
+# Maintains a cumulative installer-download counter in R2 and writes a
+# shields.io endpoint badge (stats/downloads.json). R2 analytics only retains
+# ~32 days, so the running total is accumulated daily from fully-elapsed days.
+# Script comes from Wangnov/agents-mirror-kit (pinned tag). Requires the
+# CF_ANALYTICS_API_TOKEN secret (Account Analytics:Read) in addition to the
+# existing R2 secrets.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "7 3 * * *" # daily at 03:07 UTC (offset from codex-app-mirror's run)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-app-mirror-stats
+  cancel-in-progress: false
+
+env:
+  R2_BUCKET_NAME: claude-app-mirror
+
+jobs:
+  stats:
+    name: Update cumulative download badge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout agents-mirror-kit
+        uses: actions/checkout@v6
+        with:
+          repository: Wangnov/agents-mirror-kit
+          ref: v0.1.0
+          path: .mirror-kit
+
+      - name: Ensure AWS CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            python3 -m pip install --user awscli
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Update stats and badge
+        env:
+          CF_ANALYTICS_API_TOKEN: ${{ secrets.CF_ANALYTICS_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          STATS_OBJECTS: latest/mac,latest/win-x64,latest/win-arm64
+        run: python3 .mirror-kit/scripts/update-download-stats.py
