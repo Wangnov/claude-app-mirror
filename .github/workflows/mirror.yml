@@ -59,6 +59,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Checkout agents-mirror-kit
+        uses: actions/checkout@v6
+        with:
+          repository: Wangnov/agents-mirror-kit
+          ref: v0.1.0
+          path: .mirror-kit
+
       - name: Restore probe manifest
         shell: bash
         run: |
@@ -105,7 +112,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
-        run: bash scripts/remove-latest-links-from-release-notes.sh "${{ needs.probe.outputs.latest_tag }}"
+        run: bash .mirror-kit/scripts/remove-latest-links-from-release-notes.sh "${{ needs.probe.outputs.latest_tag }}"
 
       - name: Ensure AWS CLI
         shell: bash
@@ -135,17 +142,17 @@ jobs:
 
           staging_prefix="staging/${{ steps.meta.outputs.tag }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup_staging() {
-            bash scripts/clear-r2-prefix.sh "$R2_BUCKET_NAME" "$staging_prefix" || true
+            bash .mirror-kit/scripts/clear-r2-prefix.sh "$R2_BUCKET_NAME" "$staging_prefix" || true
           }
           trap cleanup_staging EXIT
 
           upload_aliases() {
             local prefix="$1"
-            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/mac" "$mac" Claude-mac-universal.dmg
-            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-x64" "$win_x64" Claude-win-x64.msix
-            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-arm64" "$win_arm64" Claude-win-arm64.msix
-            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/checksums" SHA256SUMS.txt SHA256SUMS.txt
-            bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/manifest" release-manifest.json release-manifest.json
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/mac" "$mac" Claude-mac-universal.dmg
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-x64" "$win_x64" Claude-win-x64.msix
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-arm64" "$win_arm64" Claude-win-arm64.msix
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/checksums" SHA256SUMS.txt SHA256SUMS.txt
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/manifest" release-manifest.json release-manifest.json
           }
 
           upload_aliases "$staging_prefix"
@@ -155,11 +162,11 @@ jobs:
             --no-progress
           cmp release-manifest.json /tmp/r2-staging-manifest.json
 
-          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/mac "$mac" Claude-mac-universal.dmg
-          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-x64 "$win_x64" Claude-win-x64.msix
-          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-arm64 "$win_arm64" Claude-win-arm64.msix
-          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/checksums SHA256SUMS.txt SHA256SUMS.txt
-          bash scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/manifest release-manifest.json release-manifest.json
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/mac "$mac" Claude-mac-universal.dmg
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-x64 "$win_x64" Claude-win-x64.msix
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-arm64 "$win_arm64" Claude-win-arm64.msix
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/checksums SHA256SUMS.txt SHA256SUMS.txt
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/manifest release-manifest.json release-manifest.json
 
           curl -fsSL \
             --retry 5 \
