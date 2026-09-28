@@ -144,7 +144,7 @@
       <text x="28" y="13" class="footerAccent">15-min heartbeat</text>
     </g>
     <g>
-      <line x1="260" y1="8" x2="1060" y2="8" stroke="#e7d8c4" stroke-width="2"/>
+      <line x1="260" y1="8" x2="960" y2="8" stroke="#e7d8c4" stroke-width="2"/>
       <circle cx="260"  cy="8" r="3" fill="#e0b08c"/>
       <circle cx="360"  cy="8" r="3" fill="#e0b08c"/>
       <circle cx="460"  cy="8" r="3" fill="#e0b08c"/>
@@ -153,12 +153,11 @@
       <circle cx="760"  cy="8" r="3" fill="#e0b08c"/>
       <circle cx="860"  cy="8" r="3" fill="#e0b08c"/>
       <circle cx="960"  cy="8" r="3" fill="#e0b08c"/>
-      <circle cx="1060" cy="8" r="3" fill="#e0b08c"/>
       <circle cx="260" cy="8" r="5.5" fill="#c96442" opacity="0">
-        <animate attributeName="cx" from="260" to="1060" dur="6s" repeatCount="indefinite"/>
+        <animate attributeName="cx" from="260" to="960" dur="6s" repeatCount="indefinite"/>
         <animate attributeName="opacity" values="0;0.9;0.9;0" keyTimes="0;0.06;0.94;1" dur="6s" repeatCount="indefinite"/>
       </circle>
     </g>
-    <text x="1330" y="13" text-anchor="end" class="footer">MSIX x64 · MSIX arm64 · DMG universal</text>
+    <text x="1330" y="13" text-anchor="end" class="footer">DMG universal · MSIX x64/arm64 · DEB x64/arm64</text>
   </g>
 </svg>

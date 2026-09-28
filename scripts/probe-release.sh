@@ -2,10 +2,12 @@
 set -euo pipefail
 
 # Probe the official Claude Desktop update API for the current release and build a
-# release-manifest.json describing the three self-contained installers we mirror:
+# release-manifest.json describing the five self-contained installers we mirror:
 #   - macOS universal DMG
 #   - Windows x64 MSIX
 #   - Windows arm64 MSIX
+#   - Linux x64 deb
+#   - Linux arm64 deb
 #
 # The version-independent redirect endpoints (no Cloudflare challenge, no auth) are:
 #   https://api.anthropic.com/api/desktop/<platform>/<arch>/<format>/latest/redirect
@@ -138,25 +140,32 @@ manifest_key() {
   jq -S -c '{
     macos: { url: .sources.macos.universal.url, len: .sources.macos.universal.contentLength },
     win_x64: { url: .sources.windows.x64.url, len: .sources.windows.x64.contentLength },
-    win_arm64: { url: .sources.windows.arm64.url, len: .sources.windows.arm64.contentLength }
+    win_arm64: { url: .sources.windows.arm64.url, len: .sources.windows.arm64.contentLength },
+    linux_x64: { url: .sources.linux.x64.url, len: .sources.linux.x64.contentLength },
+    linux_arm64: { url: .sources.linux.arm64.url, len: .sources.linux.arm64.contentLength }
   }' "$1"
 }
 
 mac_json="$(probe_one darwin universal dmg)"
 win_x64_json="$(probe_one win32 x64 msix)"
 win_arm64_json="$(probe_one win32 arm64 msix)"
+linux_x64_json="$(probe_one linux x64 deb)"
+linux_arm64_json="$(probe_one linux arm64 deb)"
 
 version="$(jq -r '.version' <<<"$mac_json")"
 win_x64_version="$(jq -r '.version' <<<"$win_x64_json")"
 win_arm64_version="$(jq -r '.version' <<<"$win_arm64_json")"
+linux_x64_version="$(jq -r '.version' <<<"$linux_x64_json")"
+linux_arm64_version="$(jq -r '.version' <<<"$linux_arm64_json")"
 
 if [[ -z "$version" || "$version" == "null" ]]; then
   echo "Missing macOS version from probe." >&2
   exit 1
 fi
 
-if [[ "$win_x64_version" != "$version" || "$win_arm64_version" != "$version" ]]; then
-  echo "Note: platform versions differ (mac=$version win-x64=$win_x64_version win-arm64=$win_arm64_version); tagging by macOS version." >&2
+if [[ "$win_x64_version" != "$version" || "$win_arm64_version" != "$version" ||
+      "$linux_x64_version" != "$version" || "$linux_arm64_version" != "$version" ]]; then
+  echo "Note: platform versions differ (mac=$version win-x64=$win_x64_version win-arm64=$win_arm64_version linux-x64=$linux_x64_version linux-arm64=$linux_arm64_version); tagging by macOS version." >&2
 fi
 
 jq -n \
@@ -166,6 +175,8 @@ jq -n \
   --argjson mac "$mac_json" \
   --argjson winx64 "$win_x64_json" \
   --argjson winarm64 "$win_arm64_json" \
+  --argjson linuxx64 "$linux_x64_json" \
+  --argjson linuxarm64 "$linux_arm64_json" \
   '{
     schemaVersion: 1,
     generatedAt: $generatedAt,
@@ -173,7 +184,8 @@ jq -n \
     version: $version,
     sources: {
       macos: { universal: $mac },
-      windows: { x64: $winx64, arm64: $winarm64 }
+      windows: { x64: $winx64, arm64: $winarm64 },
+      linux: { x64: $linuxx64, arm64: $linuxarm64 }
     }
   }' > "$manifest_path"
 
@@ -217,7 +229,7 @@ else
   release_tag=""
 fi
 
-version_summary="version=$version; mac=$(jq -r '.sources.macos.universal.contentLength' "$manifest_path")B; win-x64=$(jq -r '.sources.windows.x64.contentLength' "$manifest_path")B; win-arm64=$(jq -r '.sources.windows.arm64.contentLength' "$manifest_path")B"
+version_summary="version=$version; mac=$(jq -r '.sources.macos.universal.contentLength' "$manifest_path")B; win-x64=$(jq -r '.sources.windows.x64.contentLength' "$manifest_path")B; win-arm64=$(jq -r '.sources.windows.arm64.contentLength' "$manifest_path")B; linux-x64=$(jq -r '.sources.linux.x64.contentLength' "$manifest_path")B; linux-arm64=$(jq -r '.sources.linux.arm64.contentLength' "$manifest_path")B"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {

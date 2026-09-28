@@ -102,6 +102,8 @@ jobs:
             dist/Claude-mac-universal.dmg \
             dist/Claude-win-x64.msix \
             dist/Claude-win-arm64.msix \
+            dist/Claude-linux-x64.deb \
+            dist/Claude-linux-arm64.deb \
             SHA256SUMS.txt \
             release-manifest.json
 
@@ -135,10 +137,14 @@ jobs:
           mac="dist/Claude-mac-universal.dmg"
           win_x64="dist/Claude-win-x64.msix"
           win_arm64="dist/Claude-win-arm64.msix"
+          linux_x64="dist/Claude-linux-x64.deb"
+          linux_arm64="dist/Claude-linux-arm64.deb"
 
           test -f "$mac"
           test -f "$win_x64"
           test -f "$win_arm64"
+          test -f "$linux_x64"
+          test -f "$linux_arm64"
 
           staging_prefix="staging/${{ steps.meta.outputs.tag }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup_staging() {
@@ -151,6 +157,8 @@ jobs:
             bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/mac" "$mac" Claude-mac-universal.dmg
             bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-x64" "$win_x64" Claude-win-x64.msix
             bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/win-arm64" "$win_arm64" Claude-win-arm64.msix
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/linux-x64" "$linux_x64" Claude-linux-x64.deb
+            bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/linux-arm64" "$linux_arm64" Claude-linux-arm64.deb
             bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/checksums" SHA256SUMS.txt SHA256SUMS.txt
             bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" "$prefix/manifest" release-manifest.json release-manifest.json
           }
@@ -165,6 +173,8 @@ jobs:
           bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/mac "$mac" Claude-mac-universal.dmg
           bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-x64 "$win_x64" Claude-win-x64.msix
           bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/win-arm64 "$win_arm64" Claude-win-arm64.msix
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/linux-x64 "$linux_x64" Claude-linux-x64.deb
+          bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/linux-arm64 "$linux_arm64" Claude-linux-arm64.deb
           bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/checksums SHA256SUMS.txt SHA256SUMS.txt
           bash .mirror-kit/scripts/sync-r2.sh --object "$R2_BUCKET_NAME" latest/manifest release-manifest.json release-manifest.json
 
