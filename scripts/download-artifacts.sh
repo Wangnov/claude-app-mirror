@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Download the three mirrored installers described in a probe manifest and verify
+# Download the five mirrored installers described in a probe manifest and verify
 # their byte sizes. All artifacts are public, unauthenticated objects on
 # downloads.claude.ai (Google Cloud Storage).
 #
@@ -76,6 +76,8 @@ download() {
 download '.sources.macos.universal' "$out_dir/Claude-mac-universal.dmg"
 download '.sources.windows.x64'     "$out_dir/Claude-win-x64.msix"
 download '.sources.windows.arm64'   "$out_dir/Claude-win-arm64.msix"
+download '.sources.linux.x64'       "$out_dir/Claude-linux-x64.deb"
+download '.sources.linux.arm64'     "$out_dir/Claude-linux-arm64.deb"
 
 echo "Downloaded installers to $out_dir:" >&2
 ls -l "$out_dir" >&2

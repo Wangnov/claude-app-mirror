@@ -51,5 +51,5 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: auto
           R2_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          STATS_OBJECTS: latest/mac,latest/win-x64,latest/win-arm64
+          STATS_OBJECTS: latest/mac,latest/win-x64,latest/win-arm64,latest/linux-x64,latest/linux-arm64
         run: python3 .mirror-kit/scripts/update-download-stats.py

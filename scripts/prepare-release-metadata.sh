@@ -40,8 +40,10 @@ fi
 mac_file="$artifacts_dir/Claude-mac-universal.dmg"
 win_x64_file="$artifacts_dir/Claude-win-x64.msix"
 win_arm64_file="$artifacts_dir/Claude-win-arm64.msix"
+linux_x64_file="$artifacts_dir/Claude-linux-x64.deb"
+linux_arm64_file="$artifacts_dir/Claude-linux-arm64.deb"
 
-for file in "$mac_file" "$win_x64_file" "$win_arm64_file"; do
+for file in "$mac_file" "$win_x64_file" "$win_arm64_file" "$linux_x64_file" "$linux_arm64_file"; do
   if [[ ! -f "$file" ]]; then
     echo "Missing artifact: $file" >&2
     exit 1
@@ -55,10 +57,14 @@ sha_of() {
 mac_sha="$(sha_of "$mac_file")"
 win_x64_sha="$(sha_of "$win_x64_file")"
 win_arm64_sha="$(sha_of "$win_arm64_file")"
+linux_x64_sha="$(sha_of "$linux_x64_file")"
+linux_arm64_sha="$(sha_of "$linux_arm64_file")"
 
 mac_version="$(jq -r '.sources.macos.universal.version' "$probe_manifest")"
 win_x64_version="$(jq -r '.sources.windows.x64.version' "$probe_manifest")"
 win_arm64_version="$(jq -r '.sources.windows.arm64.version' "$probe_manifest")"
+linux_x64_version="$(jq -r '.sources.linux.x64.version' "$probe_manifest")"
+linux_arm64_version="$(jq -r '.sources.linux.arm64.version' "$probe_manifest")"
 
 if [[ -n "$release_tag_override" ]]; then
   tag="$release_tag_override"
@@ -71,6 +77,8 @@ jq \
   --arg macSha "$mac_sha" \
   --arg winX64Sha "$win_x64_sha" \
   --arg winArm64Sha "$win_arm64_sha" \
+  --arg linuxX64Sha "$linux_x64_sha" \
+  --arg linuxArm64Sha "$linux_arm64_sha" \
   '
   .schemaVersion = 2
   | .sources.macos.universal.sha256 = $macSha
@@ -79,12 +87,16 @@ jq \
   | .sources.windows.x64.assetName = "Claude-win-x64.msix"
   | .sources.windows.arm64.sha256 = $winArm64Sha
   | .sources.windows.arm64.assetName = "Claude-win-arm64.msix"
+  | .sources.linux.x64.sha256 = $linuxX64Sha
+  | .sources.linux.x64.assetName = "Claude-linux-x64.deb"
+  | .sources.linux.arm64.sha256 = $linuxArm64Sha
+  | .sources.linux.arm64.assetName = "Claude-linux-arm64.deb"
   ' "$probe_manifest" > release-manifest.json
 
 {
   while IFS= read -r -d '' file; do
     printf '%s  %s\n' "$(sha_of "$file")" "$(basename "$file")"
-  done < <(find "$artifacts_dir" -type f \( -name '*.dmg' -o -name '*.msix' \) -print0 | sort -z)
+  done < <(find "$artifacts_dir" -type f \( -name '*.dmg' -o -name '*.msix' -o -name '*.deb' \) -print0 | sort -z)
   printf '%s  %s\n' "$(sha_of release-manifest.json)" "release-manifest.json"
 } > SHA256SUMS.txt
 
@@ -101,12 +113,16 @@ jq \
   echo "- macOS（Apple Silicon + Intel 通用包）: \`Claude-mac-universal.dmg\`"
   echo "- Windows x64: \`Claude-win-x64.msix\`"
   echo "- Windows arm64: \`Claude-win-arm64.msix\`"
+  echo "- Linux x64（Ubuntu / Debian）: \`Claude-linux-x64.deb\`"
+  echo "- Linux arm64（Ubuntu / Debian）: \`Claude-linux-arm64.deb\`"
   echo
   echo "## 版本信息"
   echo
   echo "- macOS universal: \`${mac_version}\`"
   echo "- Windows x64: \`${win_x64_version}\`"
   echo "- Windows arm64: \`${win_arm64_version}\`"
+  echo "- Linux x64: \`${linux_x64_version}\`"
+  echo "- Linux arm64: \`${linux_arm64_version}\`"
   echo
   echo "<!-- latest-links-cn:start -->"
   echo "## 最新版快速下载"
@@ -114,6 +130,8 @@ jq \
   echo "- macOS: ${r2_public_base_url}/latest/mac"
   echo "- Windows x64: ${r2_public_base_url}/latest/win-x64"
   echo "- Windows arm64: ${r2_public_base_url}/latest/win-arm64"
+  echo "- Linux x64: ${r2_public_base_url}/latest/linux-x64"
+  echo "- Linux arm64: ${r2_public_base_url}/latest/linux-arm64"
   echo "- 校验和: ${r2_public_base_url}/latest/checksums"
   echo "- Manifest: ${r2_public_base_url}/latest/manifest"
   echo
@@ -124,6 +142,7 @@ jq \
   echo
   echo "- macOS：打开 \`.dmg\`，把 Claude 拖进“应用程序”即可。"
   echo "- Windows：双击 \`.msix\`，由“应用安装程序”完成安装；或用 PowerShell \`Add-AppxPackage Claude-win-x64.msix\`。MSIX 为已签名包，消费版 Windows 10/11 默认允许安装；若被组策略限制，需要管理员放行已签名应用的侧载。"
+  echo "- Linux：在下载目录执行 \`sudo apt install ./Claude-linux-x64.deb\`（arm64 设备使用 \`Claude-linux-arm64.deb\`）。官方 Linux 版目前为 beta，支持 Ubuntu 22.04 及以上、Debian 12 及以上。"
   echo
   echo "> 我们镜像的是 **自包含、可离线安装** 的 \`.dmg\` 与 \`.msix\`。官网 Windows 的 \`ClaudeSetup.exe\`（约 7MB）只是一个在线引导器，安装时仍会回 \`downloads.claude.ai\`（Google Cloud Storage）下载真正的 MSIX，因此不在镜像范围内。"
   echo
@@ -133,7 +152,7 @@ jq \
   echo
   echo "## 来源说明"
   echo
-  echo "本项目只镜像官方安装包，不修改、不重打包、不破解安装器。上游指纹（版本、URL、内容哈希、大小）记录在随附的 \`release-manifest.json\` 中。Claude 官方没有 Linux 桌面客户端，故本项目不包含 Linux 产物。"
+  echo "本项目只镜像官方安装包，不修改、不重打包、不破解安装器。上游指纹（版本、URL、内容哈希、大小）记录在随附的 \`release-manifest.json\` 中。"
   echo
   echo "---"
   echo
@@ -146,12 +165,16 @@ jq \
   echo "- macOS (universal, Apple Silicon + Intel): \`Claude-mac-universal.dmg\`"
   echo "- Windows x64: \`Claude-win-x64.msix\`"
   echo "- Windows arm64: \`Claude-win-arm64.msix\`"
+  echo "- Linux x64 (Ubuntu / Debian): \`Claude-linux-x64.deb\`"
+  echo "- Linux arm64 (Ubuntu / Debian): \`Claude-linux-arm64.deb\`"
   echo
   echo "## Version details"
   echo
   echo "- macOS universal: \`${mac_version}\`"
   echo "- Windows x64: \`${win_x64_version}\`"
   echo "- Windows arm64: \`${win_arm64_version}\`"
+  echo "- Linux x64: \`${linux_x64_version}\`"
+  echo "- Linux arm64: \`${linux_arm64_version}\`"
   echo
   echo "<!-- latest-links-en:start -->"
   echo "## Latest quick downloads"
@@ -159,6 +182,8 @@ jq \
   echo "- macOS: ${r2_public_base_url}/latest/mac"
   echo "- Windows x64: ${r2_public_base_url}/latest/win-x64"
   echo "- Windows arm64: ${r2_public_base_url}/latest/win-arm64"
+  echo "- Linux x64: ${r2_public_base_url}/latest/linux-x64"
+  echo "- Linux arm64: ${r2_public_base_url}/latest/linux-arm64"
   echo "- Checksums: ${r2_public_base_url}/latest/checksums"
   echo "- Manifest: ${r2_public_base_url}/latest/manifest"
   echo
@@ -169,6 +194,7 @@ jq \
   echo
   echo "- macOS: open the \`.dmg\` and drag Claude into Applications."
   echo "- Windows: double-click the \`.msix\` (App Installer), or run \`Add-AppxPackage Claude-win-x64.msix\`. The MSIX is signed; consumer Windows 10/11 allows it by default. Locked-down machines may need an admin to allow signed-app sideloading."
+  echo "- Linux: run \`sudo apt install ./Claude-linux-x64.deb\` from the download directory (use \`Claude-linux-arm64.deb\` on arm64). The official Linux app is in beta and supports Ubuntu 22.04+ and Debian 12+."
   echo
   echo "> We mirror the **self-contained, offline-installable** \`.dmg\` and \`.msix\`. The official Windows \`ClaudeSetup.exe\` (~7MB) is only an online bootstrapper that re-downloads the real MSIX from \`downloads.claude.ai\` (Google Cloud Storage) at install time, so it is intentionally not mirrored."
   echo
@@ -178,7 +204,7 @@ jq \
   echo
   echo "## Source notes"
   echo
-  echo "This project only mirrors official installer packages. It does not modify, repackage, or bypass installer authorization. The full upstream fingerprints are in the attached \`release-manifest.json\`. Anthropic ships no official Linux desktop client, so no Linux artifact is included."
+  echo "This project only mirrors official installer packages. It does not modify, repackage, or bypass installer authorization. The full upstream fingerprints are in the attached \`release-manifest.json\`."
 } > release-notes.md
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
