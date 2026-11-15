@@ -17,6 +17,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Checkout agents-mirror-kit
+        uses: actions/checkout@v6
+        with:
+          repository: Wangnov/agents-mirror-kit
+          ref: v0.2.0
+          path: .mirror-kit
+
       - name: Install actionlint
         shell: bash
         run: |
@@ -39,3 +46,17 @@ jobs:
       - name: Validate GitHub Actions
         shell: bash
         run: actionlint
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Validate download router config against kit worker
+        shell: bash
+        run: node cloudflare/download-router/validate-config.mjs
+
+      - name: Validate secondary-sync worker
+        shell: bash
+        run: |
+          npm ci --prefix cloudflare/secondary-sync
+          npm run check --prefix cloudflare/secondary-sync

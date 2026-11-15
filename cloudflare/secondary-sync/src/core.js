@@ -1,0 +1,1195 @@
+const DEFAULT_PART_SIZE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_SINGLE_PUT_MAX_BYTES = 32 * 1024 * 1024;
+const DEFAULT_CACHE_CONTROL = "public, max-age=600, s-maxage=86400";
+const DEFAULT_STAGE_PREFIX = "staging/secondary-sync";
+const ALIAS_ROLLBACK_SUFFIX = ".rollback";
+const DEFAULT_STAGE_GRACE_HOURS = 2;
+
+const INSTALLER_TARGETS = [
+  {
+    id: "mac",
+    source: (sources) => sources?.macos?.universal,
+    sourceLabel: "sources.macos.universal",
+    sourceKey: "latest/mac",
+    stageRelativeKey: "mac",
+    filename: "Claude-mac-universal.dmg",
+    contentType: "application/x-apple-diskimage",
+  },
+  {
+    id: "win-x64",
+    source: (sources) => sources?.windows?.x64,
+    sourceLabel: "sources.windows.x64",
+    sourceKey: "latest/win-x64",
+    stageRelativeKey: "win-x64",
+    filename: "Claude-win-x64.msix",
+    contentType: "application/vnd.ms-appx",
+  },
+  {
+    id: "win-arm64",
+    source: (sources) => sources?.windows?.arm64,
+    sourceLabel: "sources.windows.arm64",
+    sourceKey: "latest/win-arm64",
+    stageRelativeKey: "win-arm64",
+    filename: "Claude-win-arm64.msix",
+    contentType: "application/vnd.ms-appx",
+  },
+  {
+    id: "linux-x64",
+    source: (sources) => sources?.linux?.x64,
+    sourceLabel: "sources.linux.x64",
+    sourceKey: "latest/linux-x64",
+    stageRelativeKey: "linux-x64",
+    filename: "Claude-linux-x64.deb",
+    contentType: "application/octet-stream",
+  },
+  {
+    id: "linux-arm64",
+    source: (sources) => sources?.linux?.arm64,
+    sourceLabel: "sources.linux.arm64",
+    sourceKey: "latest/linux-arm64",
+    stageRelativeKey: "linux-arm64",
+    filename: "Claude-linux-arm64.deb",
+    contentType: "application/octet-stream",
+  },
+];
+
+export class NonRetryableMirrorError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "NonRetryableMirrorError";
+  }
+}
+
+export async function handleApiRequest(request, env) {
+  const url = new URL(request.url);
+
+  if (request.method === "GET" && url.pathname === "/health") {
+    return jsonResponse({ ok: true, service: "claude-app-mirror-secondary-sync" });
+  }
+
+  assertAuthorized(request, env);
+
+  if (request.method === "POST" && url.pathname === "/sync/start") {
+    const body = await readJsonBody(request);
+    const result = await startSync(env, body);
+    return jsonResponse(result, { status: result.ok ? 202 : 409 });
+  }
+
+  if (request.method === "POST" && url.pathname === "/sync/reconcile") {
+    const body = await readJsonBody(request);
+    const result = await reconcileSync(env, body);
+    return jsonResponse(result, { status: result.ok ? 200 : 409 });
+  }
+
+  if (request.method === "GET" && url.pathname === "/sync/status") {
+    const id = url.searchParams.get("id");
+    if (!id) {
+      return jsonResponse({ ok: false, error: "Missing id query parameter." }, { status: 400 });
+    }
+    const result = await workflowStatus(env, id);
+    return jsonResponse(result, { status: result.ok ? 200 : 404 });
+  }
+
+  if (request.method === "GET" && url.pathname === "/sync/plan") {
+    const source = await discoverSourceManifest(env, url.searchParams.get("releaseTag") || "");
+    const plan = buildObjectPlan(source.manifest, source.releaseTag);
+    return jsonResponse({
+      ok: true,
+      releaseTag: source.releaseTag,
+      items: plan.items.map((item) => ({
+        id: item.id,
+        sourceKey: item.sourceKey,
+        stageRelativeKey: item.stageRelativeKey,
+        aliases: item.aliasKeys,
+        role: item.role,
+      })),
+    });
+  }
+
+  return jsonResponse({ ok: false, error: "Not found" }, { status: 404 });
+}
+
+export async function startSync(env, params = {}) {
+  assertWorkflowBinding(env);
+  const source = await discoverSourceManifest(env, params.releaseTag || "");
+  const force = Boolean(params.force);
+  const instanceId =
+    params.instanceId ||
+    workflowInstanceId(source.releaseTag, params.idSalt || source.manifestSha256 || "");
+
+  const payload = {
+    releaseTag: source.releaseTag,
+    force,
+    requestedAt: new Date().toISOString(),
+  };
+
+  try {
+    const instance = await env.SECONDARY_MIRROR_WORKFLOW.create({
+      id: instanceId,
+      params: payload,
+      retention: {
+        successRetention: env.WORKFLOW_SUCCESS_RETENTION || "1 day",
+        errorRetention: env.WORKFLOW_ERROR_RETENTION || "7 days",
+      },
+    });
+    const status = await instance.status();
+    return {
+      ok: true,
+      id: instance.id,
+      state: normalizeWorkflowState(status),
+      status,
+      releaseTag: source.releaseTag,
+      created: true,
+    };
+  } catch (error) {
+    const existing = await getWorkflowIfExists(env, instanceId);
+    if (!existing) {
+      throw error;
+    }
+
+    const status = await existing.status();
+    const state = normalizeWorkflowState(status);
+    if (force || shouldRestartState(state)) {
+      await existing.restart();
+      const restartedStatus = await existing.status();
+      return {
+        ok: true,
+        id: existing.id,
+        state: normalizeWorkflowState(restartedStatus),
+        status: restartedStatus,
+        releaseTag: source.releaseTag,
+        created: false,
+        restarted: true,
+      };
+    }
+
+    return {
+      ok: true,
+      id: existing.id,
+      state,
+      status,
+      releaseTag: source.releaseTag,
+      created: false,
+      restarted: false,
+      reused: true,
+    };
+  }
+}
+
+export async function reconcileSync(env, params = {}) {
+  const source = await discoverSourceManifest(env, params.releaseTag || "");
+  const s3 = createS3Client(env);
+  let secondaryManifest = null;
+  try {
+    secondaryManifest = await s3.getObjectText("latest/manifest");
+  } catch (error) {
+    if (!String(error.message || "").includes("HTTP 404")) {
+      console.error(
+        JSON.stringify({
+          event: "secondary_manifest_read_failed",
+          error: error.message,
+        }),
+      );
+    }
+  }
+
+  if (secondaryManifest === source.manifestText && !params.force) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: "secondary manifest already matches R2 latest/manifest",
+      releaseTag: source.releaseTag,
+    };
+  }
+
+  return startSync(env, {
+    releaseTag: source.releaseTag,
+    force: Boolean(params.force),
+    idSalt: `${source.manifestSha256}-${Date.now()}`,
+  });
+}
+
+export async function workflowStatus(env, id) {
+  assertWorkflowBinding(env);
+  const instance = await getWorkflowIfExists(env, id);
+  if (!instance) {
+    return { ok: false, error: `Workflow instance not found: ${id}` };
+  }
+  const status = await instance.status();
+  return {
+    ok: true,
+    id: instance.id,
+    state: normalizeWorkflowState(status),
+    terminal: isTerminalWorkflowState(normalizeWorkflowState(status)),
+    status,
+  };
+}
+
+export async function discoverSourceManifest(env, releaseTagOverride = "") {
+  assertR2Binding(env);
+  const manifestObject = await env.GLOBAL_R2.get("latest/manifest");
+  if (!manifestObject) {
+    throw new NonRetryableMirrorError("R2 latest/manifest is missing.");
+  }
+  const manifestText = await manifestObject.text();
+  const manifest = JSON.parse(manifestText);
+  const releaseTag = releaseTagOverride || deriveReleaseTag(manifest);
+  if (!releaseTag) {
+    throw new NonRetryableMirrorError("Could not derive release tag from manifest.");
+  }
+  return {
+    releaseTag,
+    manifest,
+    manifestText,
+    manifestSha256: await sha256Hex(manifestText),
+  };
+}
+
+export function buildObjectPlan(manifest, releaseTag) {
+  const sources = manifest?.sources || {};
+  const items = [];
+
+  for (const target of INSTALLER_TARGETS) {
+    const entry = target.source(sources);
+    if (!entry || typeof entry !== "object") {
+      throw new NonRetryableMirrorError(`Manifest is missing ${target.sourceLabel}.`);
+    }
+    addItem(items, {
+      id: target.id,
+      sourceKey: target.sourceKey,
+      stageRelativeKey: target.stageRelativeKey,
+      aliasKeys: [target.sourceKey],
+      filename: target.filename,
+      contentType: target.contentType,
+      role: "installer",
+      required: true,
+    });
+  }
+
+  addItem(items, {
+    id: "checksums",
+    sourceKey: "latest/checksums",
+    stageRelativeKey: "checksums",
+    aliasKeys: ["latest/checksums"],
+    filename: "SHA256SUMS.txt",
+    contentType: "text/plain; charset=utf-8",
+    role: "checksums",
+    required: true,
+  });
+
+  addItem(items, {
+    id: "manifest",
+    sourceKey: "latest/manifest",
+    stageRelativeKey: "manifest",
+    aliasKeys: ["latest/manifest"],
+    filename: "release-manifest.json",
+    contentType: "application/json",
+    role: "manifest",
+    required: true,
+  });
+
+  return {
+    releaseTag,
+    items,
+  };
+}
+
+function addItem(items, item) {
+  items.push({
+    cacheControl: DEFAULT_CACHE_CONTROL,
+    ...item,
+  });
+}
+
+export async function uploadObjectToStage(env, item, options = {}) {
+  assertR2Binding(env);
+  const source = await headR2Object(env, item.sourceKey);
+  if (!source) {
+    if (item.required) {
+      throw new NonRetryableMirrorError(`R2 source object is missing: ${item.sourceKey}`);
+    }
+    return { id: item.id, sourceKey: item.sourceKey, skipped: true, reason: "source missing" };
+  }
+
+  const s3 = createS3Client(env);
+  const existing = await s3.headObject(item.stageKey);
+  if (!options.forceUpload && existing?.contentLength === source.size) {
+    return {
+      id: item.id,
+      sourceKey: item.sourceKey,
+      stageKey: item.stageKey,
+      size: source.size,
+      skipped: true,
+      reason: "stage object already exists with matching size",
+    };
+  }
+
+  const singlePutMaxBytes = parseBytes(
+    options.singlePutMaxBytes ?? env.SECONDARY_SYNC_SINGLE_PUT_MAX_BYTES,
+    DEFAULT_SINGLE_PUT_MAX_BYTES,
+    0,
+  );
+  const partSize = parseBytes(
+    options.partSizeBytes ?? env.SECONDARY_SYNC_PART_SIZE_BYTES,
+    DEFAULT_PART_SIZE_BYTES,
+    options.minPartSizeBytes ?? 5 * 1024 * 1024,
+  );
+
+  if (source.size <= singlePutMaxBytes) {
+    const data = await readR2ObjectRange(env, item.sourceKey, 0, source.size);
+    await s3.putObject(item.stageKey, data, item);
+  } else {
+    await multipartUploadFromR2(env, s3, item, source.size, partSize);
+  }
+
+  const verified = await s3.headObject(item.stageKey);
+  if (!verified || verified.contentLength !== source.size) {
+    throw new Error(
+      `Secondary stage verification failed for ${item.stageKey}: expected ${source.size}, got ${verified?.contentLength ?? "missing"}.`,
+    );
+  }
+
+  return {
+    id: item.id,
+    sourceKey: item.sourceKey,
+    stageKey: item.stageKey,
+    size: source.size,
+    uploaded: true,
+  };
+}
+
+export async function commitObjectToAliases(env, item) {
+  const s3 = createS3Client(env);
+  const source = await s3.headObject(item.stageKey);
+  if (!source) {
+    throw new Error(`Cannot commit missing stage object: ${item.stageKey}`);
+  }
+
+  const aliases = [];
+  for (const aliasKey of item.aliasKeys) {
+    await commitOneAlias(s3, item.stageKey, aliasKey, source.contentLength);
+    aliases.push({ key: aliasKey, size: source.contentLength });
+  }
+
+  return {
+    id: item.id,
+    stageKey: item.stageKey,
+    aliases,
+    size: source.contentLength,
+  };
+}
+
+// IHEP 网关的服务端 COPY 只在目标 key 不存在时成功，覆盖已存在的 key 必定返回
+// InternalError/502，所以别名只能先删后拷。删除会让已发布的别名短暂消失，因此
+// 先把旧对象复制成 .rollback 备份，复制或校验失败时还原，避免一次失败的发布把
+// 线上别名留成 404。
+async function commitOneAlias(s3, stageKey, aliasKey, expectedSize) {
+  const backupKey = `${aliasKey}${ALIAS_ROLLBACK_SUFFIX}`;
+  const existing = await s3.headObject(aliasKey);
+
+  if (existing) {
+    await s3.deleteObject(backupKey);
+    await s3.copyObject(aliasKey, backupKey);
+    await s3.deleteObject(aliasKey);
+  }
+
+  try {
+    await s3.copyObject(stageKey, aliasKey);
+    const verified = await s3.headObject(aliasKey);
+    if (!verified || verified.contentLength !== expectedSize) {
+      throw new Error(
+        `Secondary alias verification failed for ${aliasKey}: expected ${expectedSize}, got ${verified?.contentLength ?? "missing"}.`,
+      );
+    }
+  } catch (error) {
+    await restoreAliasFromBackup(s3, aliasKey, backupKey);
+    throw error;
+  }
+
+  await s3.deleteObject(backupKey);
+}
+
+async function restoreAliasFromBackup(s3, aliasKey, backupKey) {
+  try {
+    if (!(await s3.headObject(backupKey))) {
+      return;
+    }
+    await s3.deleteObject(aliasKey);
+    await s3.copyObject(backupKey, aliasKey);
+    await s3.deleteObject(backupKey);
+  } catch (restoreError) {
+    // 备份留在原处，供下一次重试还原。
+    console.error(
+      JSON.stringify({
+        event: "secondary_alias_restore_failed",
+        aliasKey,
+        backupKey,
+        error: restoreError.message,
+      }),
+    );
+  }
+}
+
+export async function cleanupStageObjects(env, items) {
+  const s3 = createS3Client(env);
+  const deleted = [];
+  for (const item of items) {
+    await s3.deleteObject(item.stageKey);
+    deleted.push(item.stageKey);
+  }
+  const stagePrefix = stagePrefixFromItems(items);
+  if (stagePrefix) {
+    for (const marker of [`${stagePrefix}/objects/`, `${stagePrefix}/`]) {
+      await s3.deleteObject(marker);
+      deleted.push(marker);
+    }
+  }
+  return { deleted };
+}
+
+function stagePrefixFromItems(items) {
+  const first = items[0]?.stageKey || "";
+  const marker = "/objects/";
+  const index = first.indexOf(marker);
+  return index === -1 ? "" : first.slice(0, index);
+}
+
+export async function pruneAbandonedStageObjects(env, keepStagePrefix = "", options = {}) {
+  const s3 = createS3Client(env);
+  const stageRoot = `${cleanPrefix(env.SECONDARY_SYNC_STAGE_PREFIX || DEFAULT_STAGE_PREFIX)}/`;
+  const graceHours = parseNonNegativeInteger(
+    options.graceHours ?? env.SECONDARY_SYNC_STAGE_GRACE_HOURS,
+    DEFAULT_STAGE_GRACE_HOURS,
+  );
+  const cutoff = Date.now() - graceHours * 60 * 60 * 1000;
+  const deleted = [];
+  const aborted = [];
+
+  for (const object of await s3.listObjects(stageRoot)) {
+    if (!isAbandonedStageEntry(object.key, object.lastModified, keepStagePrefix, cutoff)) {
+      continue;
+    }
+    await s3.deleteObject(object.key);
+    deleted.push(object.key);
+  }
+
+  for (const upload of await s3.listMultipartUploads(stageRoot)) {
+    if (!isAbandonedStageEntry(upload.key, upload.initiated, keepStagePrefix, cutoff)) {
+      continue;
+    }
+    await s3.abortMultipartUpload(upload.key, upload.uploadId);
+    aborted.push({ key: upload.key, uploadId: upload.uploadId });
+  }
+
+  return { deleted, aborted, graceHours };
+}
+
+function isAbandonedStageEntry(key, timestamp, keepStagePrefix, cutoff) {
+  if (!key || !timestamp || Number.isNaN(timestamp.getTime())) {
+    return false;
+  }
+  const keepPrefix = cleanPrefix(keepStagePrefix);
+  if (keepPrefix && (key === keepPrefix || key.startsWith(`${keepPrefix}/`))) {
+    return false;
+  }
+  return timestamp.getTime() < cutoff;
+}
+
+export function decoratePlanWithStage(plan, instanceId, env = {}) {
+  const safeTag = safeKeySegment(plan.releaseTag);
+  const safeInstance = safeKeySegment(instanceId);
+  const stagePrefix = cleanPrefix(env.SECONDARY_SYNC_STAGE_PREFIX || DEFAULT_STAGE_PREFIX);
+  const fullStagePrefix = `${stagePrefix}/${safeTag}/${safeInstance}`;
+  return {
+    ...plan,
+    stagePrefix: fullStagePrefix,
+    items: plan.items.map((item) => ({
+      ...item,
+      stageKey: `${fullStagePrefix}/objects/${flatStageName(item)}`,
+    })),
+  };
+}
+
+function flatStageName(item) {
+  const label = safeKeySegment(item.id).slice(0, 72);
+  return `${label}-${fnv1a(item.stageRelativeKey)}`;
+}
+
+export function commitOrder(items) {
+  return [...items].sort((left, right) => {
+    const rank = roleRank(left.role) - roleRank(right.role);
+    if (rank !== 0) {
+      return rank;
+    }
+    return left.id.localeCompare(right.id);
+  });
+}
+
+function roleRank(role) {
+  switch (role) {
+    case "installer":
+      return 10;
+    case "checksums":
+      return 90;
+    case "manifest":
+      return 100;
+    default:
+      return 50;
+  }
+}
+
+async function multipartUploadFromR2(env, s3, item, size, partSize) {
+  const uploadId = await s3.createMultipartUpload(item.stageKey, item);
+  const parts = [];
+  try {
+    const totalParts = Math.ceil(size / partSize);
+    for (let partNumber = 1; partNumber <= totalParts; partNumber += 1) {
+      const offset = (partNumber - 1) * partSize;
+      const length = Math.min(partSize, size - offset);
+      const data = await readR2ObjectRange(env, item.sourceKey, offset, length);
+      const etag = await s3.uploadPart(item.stageKey, uploadId, partNumber, data);
+      parts.push({ partNumber, etag });
+    }
+    await s3.completeMultipartUpload(item.stageKey, uploadId, parts);
+  } catch (error) {
+    try {
+      await s3.abortMultipartUpload(item.stageKey, uploadId);
+    } catch (abortError) {
+      console.error(
+        JSON.stringify({
+          event: "secondary_multipart_abort_failed",
+          key: item.stageKey,
+          uploadId,
+          error: abortError.message,
+        }),
+      );
+    }
+    throw error;
+  }
+}
+
+async function headR2Object(env, key) {
+  const object = await env.GLOBAL_R2.head(key);
+  if (!object) {
+    return null;
+  }
+  return { size: object.size };
+}
+
+async function readR2ObjectRange(env, key, offset, length) {
+  const options =
+    length > 0
+      ? {
+          range: { offset, length },
+        }
+      : undefined;
+  const object = await env.GLOBAL_R2.get(key, options);
+  if (!object) {
+    throw new Error(`R2 object disappeared while syncing: ${key}`);
+  }
+  return object.arrayBuffer();
+}
+
+export function createS3Client(env) {
+  return new S3Client({
+    endpoint: requiredEnv(env, "SECONDARY_S3_ENDPOINT"),
+    bucket: requiredEnv(env, "SECONDARY_S3_BUCKET"),
+    region: env.SECONDARY_S3_REGION || "auto",
+    accessKeyId: requiredEnv(env, "SECONDARY_S3_ACCESS_KEY_ID"),
+    secretAccessKey: requiredEnv(env, "SECONDARY_S3_SECRET_ACCESS_KEY"),
+  });
+}
+
+export class S3Client {
+  constructor(options) {
+    this.endpoint = options.endpoint;
+    this.bucket = options.bucket;
+    this.region = options.region || "auto";
+    this.accessKeyId = options.accessKeyId;
+    this.secretAccessKey = options.secretAccessKey;
+  }
+
+  async headObject(key) {
+    const response = await this.request({ method: "HEAD", key, expectOk: false });
+    if (response.status === 404) {
+      return null;
+    }
+    if (response.status === 403) {
+      const listed = await this.findObjectByKey(key);
+      if (!listed) {
+        return null;
+      }
+      return {
+        key,
+        contentLength: listed.size,
+        etag: "",
+        lastModified: listed.lastModified,
+      };
+    }
+    await assertOk(response, "HEAD", key);
+    const contentLength = Number.parseInt(response.headers.get("content-length") || "0", 10);
+    if (contentLength === 0) {
+      const listed = await this.findObjectByKey(key);
+      if (listed && listed.size > 0) {
+        return {
+          key,
+          contentLength: listed.size,
+          etag: response.headers.get("etag") || "",
+          lastModified: listed.lastModified,
+        };
+      }
+    }
+    return {
+      key,
+      contentLength,
+      etag: response.headers.get("etag") || "",
+      lastModified: parseHttpDate(response.headers.get("last-modified")),
+    };
+  }
+
+  async findObjectByKey(key) {
+    const objects = await this.listObjects(key);
+    return objects.find((object) => object.key === key) || null;
+  }
+
+  async getObjectText(key) {
+    const response = await this.request({ method: "GET", key, expectOk: false });
+    if (response.status === 404) {
+      throw new Error(`S3 GET ${key} failed with HTTP 404.`);
+    }
+    await assertOk(response, "GET", key);
+    return response.text();
+  }
+
+  async putObject(key, body, metadata) {
+    const response = await this.request({
+      method: "PUT",
+      key,
+      headers: objectMetadataHeaders(metadata),
+      body,
+    });
+    await assertOk(response, "PUT", key);
+    return response;
+  }
+
+  async createMultipartUpload(key, metadata) {
+    const response = await this.request({
+      method: "POST",
+      key,
+      query: [["uploads", ""]],
+      headers: objectMetadataHeaders(metadata),
+    });
+    await assertOk(response, "POST", `${key}?uploads`);
+    const xml = await response.text();
+    const uploadId = xmlText(xml, "UploadId");
+    if (!uploadId) {
+      throw new Error(`S3 create multipart response for ${key} did not include UploadId.`);
+    }
+    return uploadId;
+  }
+
+  async uploadPart(key, uploadId, partNumber, body) {
+    const response = await this.request({
+      method: "PUT",
+      key,
+      query: [
+        ["partNumber", String(partNumber)],
+        ["uploadId", uploadId],
+      ],
+      body,
+    });
+    await assertOk(response, "PUT", `${key} part ${partNumber}`);
+    const etag = response.headers.get("etag");
+    if (!etag) {
+      throw new Error(`S3 upload part response for ${key} part ${partNumber} did not include ETag.`);
+    }
+    return etag;
+  }
+
+  async completeMultipartUpload(key, uploadId, parts) {
+    const body = completeMultipartXml(parts);
+    const response = await this.request({
+      method: "POST",
+      key,
+      query: [["uploadId", uploadId]],
+      headers: {
+        "content-type": "application/xml",
+      },
+      body,
+    });
+    await assertOk(response, "POST", `${key}?uploadId=${uploadId}`);
+    return response;
+  }
+
+  async abortMultipartUpload(key, uploadId) {
+    const response = await this.request({
+      method: "DELETE",
+      key,
+      query: [["uploadId", uploadId]],
+      expectOk: false,
+    });
+    if (response.status === 404) {
+      return response;
+    }
+    await assertOk(response, "DELETE", `${key}?uploadId=${uploadId}`);
+    return response;
+  }
+
+  async listMultipartUploads(prefix) {
+    const uploads = [];
+    let keyMarker = "";
+    let uploadIdMarker = "";
+    do {
+      const query = [
+        ["uploads", ""],
+        ["prefix", prefix],
+      ];
+      if (keyMarker) {
+        query.push(["key-marker", keyMarker]);
+      }
+      if (uploadIdMarker) {
+        query.push(["upload-id-marker", uploadIdMarker]);
+      }
+      const response = await this.request({
+        method: "GET",
+        key: "",
+        query,
+      });
+      await assertOk(response, "LIST MULTIPART", prefix);
+      const xml = await response.text();
+      uploads.push(...xmlMultipartUploads(xml));
+      keyMarker = xmlText(xml, "NextKeyMarker");
+      uploadIdMarker = xmlText(xml, "NextUploadIdMarker");
+    } while (keyMarker);
+    return uploads;
+  }
+
+  async copyObject(sourceKey, destinationKey) {
+    const response = await this.request({
+      method: "PUT",
+      key: destinationKey,
+      headers: {
+        "x-amz-copy-source": `/${encodeRfc3986(this.bucket)}/${encodeKeyPath(sourceKey)}`,
+      },
+    });
+    await assertOk(response, "COPY", `${sourceKey} -> ${destinationKey}`);
+    return response;
+  }
+
+  async deleteObject(key) {
+    const response = await this.request({ method: "DELETE", key, expectOk: false });
+    if (response.status === 404) {
+      return response;
+    }
+    await assertOk(response, "DELETE", key);
+    return response;
+  }
+
+  async listObjects(prefix) {
+    const objects = [];
+    let continuationToken = "";
+    do {
+      const query = [
+        ["list-type", "2"],
+        ["prefix", prefix],
+      ];
+      if (continuationToken) {
+        query.push(["continuation-token", continuationToken]);
+      }
+      const response = await this.request({
+        method: "GET",
+        key: "",
+        query,
+      });
+      await assertOk(response, "LIST", prefix);
+      const xml = await response.text();
+      for (const entry of xmlContents(xml)) {
+        objects.push(entry);
+      }
+      continuationToken = xmlText(xml, "NextContinuationToken");
+    } while (continuationToken);
+    return objects;
+  }
+
+  async request({ method, key = "", query = [], headers = {}, body, expectOk = true }) {
+    const endpoint = new URL(this.endpoint);
+    const now = new Date();
+    const amzDate = formatAmzDate(now);
+    const dateStamp = amzDate.slice(0, 8);
+    const credentialScope = `${dateStamp}/${this.region}/s3/aws4_request`;
+    const canonicalUri = canonicalS3Uri(endpoint, this.bucket, key);
+    const canonicalQuery = canonicalQueryString(query);
+    const signedHeadersMap = normalizeHeaders({
+      ...headers,
+      host: endpoint.host,
+      "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
+      "x-amz-date": amzDate,
+    });
+    const signedHeaderNames = Object.keys(signedHeadersMap).sort();
+    const canonicalHeaders = signedHeaderNames
+      .map((name) => `${name}:${signedHeadersMap[name]}\n`)
+      .join("");
+    const signedHeaders = signedHeaderNames.join(";");
+    const canonicalRequest = [
+      method,
+      canonicalUri,
+      canonicalQuery,
+      canonicalHeaders,
+      signedHeaders,
+      "UNSIGNED-PAYLOAD",
+    ].join("\n");
+    const stringToSign = [
+      "AWS4-HMAC-SHA256",
+      amzDate,
+      credentialScope,
+      await sha256Hex(canonicalRequest),
+    ].join("\n");
+    const signingKey = await signingKeyBytes(this.secretAccessKey, dateStamp, this.region, "s3");
+    const signature = toHex(await hmac(signingKey, stringToSign));
+    const authorization = `AWS4-HMAC-SHA256 Credential=${this.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    const requestHeaders = new Headers();
+    for (const [name, value] of Object.entries(signedHeadersMap)) {
+      if (name !== "host") {
+        requestHeaders.set(name, value);
+      }
+    }
+    requestHeaders.set("authorization", authorization);
+
+    const target = `${endpoint.protocol}//${endpoint.host}${canonicalUri}${
+      canonicalQuery ? `?${canonicalQuery}` : ""
+    }`;
+    const response = await fetch(target, {
+      method,
+      headers: requestHeaders,
+      body,
+    });
+
+    if (expectOk) {
+      await assertOk(response, method, key || this.bucket);
+    }
+    return response;
+  }
+}
+
+function objectMetadataHeaders(metadata) {
+  return {
+    "cache-control": metadata.cacheControl || DEFAULT_CACHE_CONTROL,
+    "content-disposition": `attachment; filename="${metadata.filename}"`,
+    "content-type": metadata.contentType || "application/octet-stream",
+  };
+}
+
+async function assertOk(response, operation, key) {
+  if (response.ok) {
+    return;
+  }
+  let body = "";
+  try {
+    body = await response.text();
+  } catch {
+    body = "";
+  }
+  throw new Error(
+    `S3 ${operation} ${key} failed with HTTP ${response.status}${body ? `: ${body.slice(0, 600)}` : "."}`,
+  );
+}
+
+export function deriveReleaseTag(manifest) {
+  const version = String(manifest?.version || "").trim();
+  if (!version) {
+    return "";
+  }
+  return `claude-app-v${sanitizeTagPart(version)}`;
+}
+
+export function sanitizeTagPart(value) {
+  return String(value)
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+export function workflowInstanceId(releaseTag, salt = "") {
+  const base = `${releaseTag}:${salt}`;
+  return `secondary-${fnv1a(base).slice(0, 24)}`;
+}
+
+function shouldRestartState(state) {
+  return state === "errored" || state === "terminated" || state === "unknown";
+}
+
+export function normalizeWorkflowState(status) {
+  if (!status) {
+    return "unknown";
+  }
+  return status.status || status.state || "unknown";
+}
+
+export function isTerminalWorkflowState(state) {
+  return state === "complete" || state === "errored" || state === "terminated";
+}
+
+function assertAuthorized(request, env) {
+  const expected = env.SYNC_AUTH_TOKEN;
+  if (!expected) {
+    throw new NonRetryableMirrorError("SYNC_AUTH_TOKEN secret is not configured.");
+  }
+  const actual = request.headers.get("authorization") || "";
+  if (actual !== `Bearer ${expected}`) {
+    throw new NonRetryableMirrorError("Unauthorized.");
+  }
+}
+
+function assertWorkflowBinding(env) {
+  if (!env.SECONDARY_MIRROR_WORKFLOW) {
+    throw new NonRetryableMirrorError("SECONDARY_MIRROR_WORKFLOW binding is not configured.");
+  }
+}
+
+function assertR2Binding(env) {
+  if (!env.GLOBAL_R2) {
+    throw new NonRetryableMirrorError("GLOBAL_R2 binding is not configured.");
+  }
+}
+
+async function getWorkflowIfExists(env, id) {
+  try {
+    return await env.SECONDARY_MIRROR_WORKFLOW.get(id);
+  } catch {
+    return null;
+  }
+}
+
+async function readJsonBody(request) {
+  const text = await request.text();
+  if (!text.trim()) {
+    return {};
+  }
+  return JSON.parse(text);
+}
+
+function jsonResponse(body, init = {}) {
+  return new Response(JSON.stringify(body, null, 2), {
+    ...init,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init.headers || {}),
+    },
+  });
+}
+
+function requiredEnv(env, name) {
+  const value = env[name];
+  if (!value) {
+    throw new NonRetryableMirrorError(`${name} is not configured.`);
+  }
+  return value;
+}
+
+function parseBytes(value, fallback, minimum) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed < minimum) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseNonNegativeInteger(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function cleanPrefix(prefix) {
+  return String(prefix || "")
+    .replace(/^\/+|\/+$/g, "")
+    .replace(/\/+/g, "/");
+}
+
+function safeKeySegment(value) {
+  return sanitizeTagPart(value) || "unknown";
+}
+
+function canonicalS3Uri(endpoint, bucket, key) {
+  const basePath = endpoint.pathname === "/" ? "" : endpoint.pathname.replace(/\/$/, "");
+  const bucketPath = encodeRfc3986(bucket);
+  const objectPath = key ? `/${encodeKeyPath(key)}` : "";
+  return `${basePath}/${bucketPath}${objectPath}`;
+}
+
+function canonicalQueryString(params = []) {
+  return params
+    .map(([key, value]) => [encodeRfc3986(key), encodeRfc3986(value)])
+    .sort(([leftKey, leftValue], [rightKey, rightValue]) => {
+      if (leftKey === rightKey) {
+        return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+      }
+      return leftKey < rightKey ? -1 : 1;
+    })
+    .map(([key, value]) => `${key}=${value}`)
+    .join("&");
+}
+
+function normalizeHeaders(headers) {
+  const normalized = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined || value === null || value === "") {
+      continue;
+    }
+    normalized[name.toLowerCase()] = String(value).trim().replace(/\s+/g, " ");
+  }
+  return normalized;
+}
+
+function encodeKeyPath(key) {
+  return String(key).split("/").map(encodeRfc3986).join("/");
+}
+
+function encodeRfc3986(value) {
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, (char) =>
+    `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+}
+
+function formatAmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+
+async function signingKeyBytes(secretAccessKey, dateStamp, region, service) {
+  const dateKey = await hmac(utf8(`AWS4${secretAccessKey}`), dateStamp);
+  const regionKey = await hmac(dateKey, region);
+  const serviceKey = await hmac(regionKey, service);
+  return hmac(serviceKey, "aws4_request");
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", toBytes(value));
+  return toHex(new Uint8Array(digest));
+}
+
+async function hmac(keyBytes, value) {
+  const cryptoKey = await crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", cryptoKey, toBytes(value));
+  return new Uint8Array(signature);
+}
+
+function toBytes(value) {
+  if (value instanceof Uint8Array) {
+    return value;
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  return utf8(value);
+}
+
+function utf8(value) {
+  return new TextEncoder().encode(String(value));
+}
+
+function toHex(bytes) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function fnv1a(value) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function xmlText(xml, tag) {
+  const match = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(xml);
+  return match ? decodeXmlText(match[1]) : "";
+}
+
+function xmlContents(xml) {
+  const entries = [];
+  const contentRegex = /<Contents>([\s\S]*?)<\/Contents>/g;
+  let match;
+  while ((match = contentRegex.exec(xml))) {
+    const block = match[1];
+    const key = xmlText(block, "Key");
+    if (!key) {
+      continue;
+    }
+    entries.push({
+      key,
+      size: Number.parseInt(xmlText(block, "Size") || "0", 10),
+      lastModified: parseHttpDate(xmlText(block, "LastModified")),
+    });
+  }
+  return entries;
+}
+
+function xmlMultipartUploads(xml) {
+  const entries = [];
+  const uploadRegex = /<Upload>([\s\S]*?)<\/Upload>/g;
+  let match;
+  while ((match = uploadRegex.exec(xml))) {
+    const block = match[1];
+    const key = xmlText(block, "Key");
+    const uploadId = xmlText(block, "UploadId");
+    if (!key || !uploadId) {
+      continue;
+    }
+    entries.push({
+      key,
+      uploadId,
+      initiated: parseHttpDate(xmlText(block, "Initiated")),
+    });
+  }
+  return entries;
+}
+
+function decodeXmlText(value) {
+  return String(value)
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function xmlEscape(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function completeMultipartXml(parts) {
+  const body = parts
+    .map(
+      (part) =>
+        `  <Part><PartNumber>${part.partNumber}</PartNumber><ETag>${xmlEscape(part.etag)}</ETag></Part>`,
+    )
+    .join("\n");
+  return `<CompleteMultipartUpload>\n${body}\n</CompleteMultipartUpload>`;
+}
+
+function parseHttpDate(value) {
+  if (!value) {
+    return null;
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
