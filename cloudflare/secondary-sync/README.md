@@ -1,0 +1,58 @@
+# Claude App secondary mirror sync
+
+Cloudflare Worker + Workflow that copies the current R2 mirror into the
+secondary S3-compatible mirror from Cloudflare's network instead of a GitHub
+hosted runner.
+
+## Flow
+
+1. GitHub publishes the Release and finishes the R2 `latest/*` sync.
+2. GitHub calls `POST /sync/start` with the release tag.
+3. The Workflow removes abandoned staging objects and multipart uploads older
+   than `SECONDARY_SYNC_STAGE_GRACE_HOURS`, then reads R2 in ranges and uploads
+   objects to an IHEP staging prefix.
+4. It copies staging objects to `latest/*` on IHEP, committing `latest/manifest`
+   after all platform installers and `latest/checksums`.
+5. It removes staging objects. If upload or commit fails, it also attempts to
+   remove the current instance's staging objects before preserving the original
+   Workflow error.
+
+The default staging grace window is two hours. It protects recent concurrent
+instances while bounding storage leaked by interrupted or terminated Workflows.
+
+## Required secrets
+
+Set these with `wrangler secret put`:
+
+- `SYNC_AUTH_TOKEN`
+- `SECONDARY_S3_ENDPOINT`
+- `SECONDARY_S3_BUCKET`
+- `SECONDARY_S3_ACCESS_KEY_ID`
+- `SECONDARY_S3_SECRET_ACCESS_KEY`
+
+GitHub Actions should store the public Worker endpoint in
+`CF_SECONDARY_SYNC_URL` and the same bearer token in `CF_SECONDARY_SYNC_TOKEN`.
+
+## Commands
+
+```bash
+npm install
+npm run check
+npm run deploy
+```
+
+Start a sync:
+
+```bash
+curl -fsS "$CF_SECONDARY_SYNC_URL/sync/start" \
+  -H "Authorization: Bearer $CF_SECONDARY_SYNC_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"releaseTag":"claude-app-v5.11492.5","force":false}'
+```
+
+Check status:
+
+```bash
+curl -fsS "$CF_SECONDARY_SYNC_URL/sync/status?id=<workflow-instance-id>" \
+  -H "Authorization: Bearer $CF_SECONDARY_SYNC_TOKEN"
+```

@@ -1,0 +1,67 @@
+{
+  "name": "claude-app-mirror-download-router",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-04",
+  "workers_dev": false,
+  "vars": {
+    "GLOBAL_MIRROR_BASE_URL": "https://claudeapp-r2.agentsmirror.com",
+    "SECONDARY_COUNTRY_CODES": "CN",
+    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "3600",
+    "ROUTE_CONFIG": {
+      "aliases": {
+        "/latest/mac": {
+          "category": "installer",
+          "filename": "Claude-mac-universal.dmg",
+          "contentType": "application/x-apple-diskimage"
+        },
+        "/latest/win-x64": {
+          "category": "installer",
+          "filename": "Claude-win-x64.msix",
+          "contentType": "application/vnd.ms-appx"
+        },
+        "/latest/win-arm64": {
+          "category": "installer",
+          "filename": "Claude-win-arm64.msix",
+          "contentType": "application/vnd.ms-appx"
+        },
+        "/latest/linux-x64": {
+          "category": "installer",
+          "filename": "Claude-linux-x64.deb",
+          "contentType": "application/octet-stream"
+        },
+        "/latest/linux-arm64": {
+          "category": "installer",
+          "filename": "Claude-linux-arm64.deb",
+          "contentType": "application/octet-stream"
+        },
+        "/latest/checksums": {
+          "category": null,
+          "filename": "SHA256SUMS.txt",
+          "contentType": "text/plain; charset=utf-8"
+        },
+        "/latest/manifest": {
+          "category": null,
+          "filename": "release-manifest.json",
+          "contentType": "application/json"
+        }
+      },
+      "patterns": []
+    }
+  },
+  "routes": [
+    {
+      "pattern": "claudeapp.agentsmirror.com/latest/*",
+      "zone_id": "a5bae9b722f3c5fe1a24aaebe7a8e663"
+    },
+    {
+      "pattern": "claudeapp.agentsmirror.com/stats/*",
+      "zone_id": "a5bae9b722f3c5fe1a24aaebe7a8e663"
+    }
+  ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "DOWNLOAD_ANALYTICS",
+      "dataset": "claude_mirror_downloads"
+    }
+  ]
+}
