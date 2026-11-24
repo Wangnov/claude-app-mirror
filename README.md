@@ -89,7 +89,7 @@ claude-app-v2.9939.4
 - Linux x64：`Claude-linux-x64.deb`
 - Linux arm64：`Claude-linux-arm64.deb`
 
-也可以直接使用镜像短链接（面向国内与全球网络，只保留最新版；所有 `/latest/*` 短链均返回 HTTP `302` 重定向，命令行使用 `curl` 下载时请务必加上 `-L`，例如 `curl -fLO https://claudeapp.agentsmirror.com/latest/mac`）：
+也可以直接使用镜像短链接（面向国内与全球网络，只保留最新版；所有 `/latest/*` 短链均返回 HTTP `302` 重定向，命令行使用 `curl` 下载时请加上 `-L` 并用 `-o` 指定目标文件名）：
 
 - macOS：[https://claudeapp.agentsmirror.com/latest/mac](https://claudeapp.agentsmirror.com/latest/mac)
 - Windows x64：[https://claudeapp.agentsmirror.com/latest/win-x64](https://claudeapp.agentsmirror.com/latest/win-x64)
@@ -99,8 +99,8 @@ claude-app-v2.9939.4
 - 校验和：[https://claudeapp.agentsmirror.com/latest/checksums](https://claudeapp.agentsmirror.com/latest/checksums)
 
 ```bash
-curl -fLO https://claudeapp.agentsmirror.com/latest/mac
-curl -fLO https://claudeapp.agentsmirror.com/latest/checksums
+curl -fL -o Claude-mac-universal.dmg https://claudeapp.agentsmirror.com/latest/mac
+curl -fL -o SHA256SUMS.txt https://claudeapp.agentsmirror.com/latest/checksums
 ```
 
 需要旧版本时，请到 [GitHub Releases](https://github.com/Wangnov/claude-app-mirror/releases) 按 tag 查找历史资产。
@@ -198,7 +198,7 @@ Open the [latest GitHub Release](https://github.com/Wangnov/claude-app-mirror/re
 - Linux x64: `Claude-linux-x64.deb`
 - Linux arm64: `Claude-linux-arm64.deb`
 
-You can also use the mirror short links directly (latest-only; all `/latest/*` endpoints return HTTP `302` redirects, so always pass `-L` when using `curl`, e.g. `curl -fLO https://claudeapp.agentsmirror.com/latest/mac`):
+You can also use the mirror short links directly (latest-only; all `/latest/*` endpoints return HTTP `302` redirects, so pass `-L` and an explicit `-o` filename when using `curl`):
 
 - macOS: [https://claudeapp.agentsmirror.com/latest/mac](https://claudeapp.agentsmirror.com/latest/mac)
 - Windows x64: [https://claudeapp.agentsmirror.com/latest/win-x64](https://claudeapp.agentsmirror.com/latest/win-x64)
@@ -208,8 +208,8 @@ You can also use the mirror short links directly (latest-only; all `/latest/*` e
 - Checksums: [https://claudeapp.agentsmirror.com/latest/checksums](https://claudeapp.agentsmirror.com/latest/checksums)
 
 ```bash
-curl -fLO https://claudeapp.agentsmirror.com/latest/mac
-curl -fLO https://claudeapp.agentsmirror.com/latest/checksums
+curl -fL -o Claude-mac-universal.dmg https://claudeapp.agentsmirror.com/latest/mac
+curl -fL -o SHA256SUMS.txt https://claudeapp.agentsmirror.com/latest/checksums
 ```
 
 For older versions, use [GitHub Releases](https://github.com/Wangnov/claude-app-mirror/releases) and download assets from the matching tag.

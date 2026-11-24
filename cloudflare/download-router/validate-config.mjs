@@ -57,6 +57,7 @@ assert.ok(!termsMarkdown.includes("公开通报"), "TERMS.md must not include '�
 assert.ok(!termsMarkdown.includes("IHEP"), "TERMS.md must not claim CAS IHEP usage while secondary S3 is unconfigured");
 
 // Validate Zone Single Redirect Rule stays in sync with BLOCKED_UA_SUBSTRINGS and within 4KB limit.
+assert.equal(redirectRule.ref, "claudeapp_unauthorized_ua_redirect", "redirect rule must declare explicit ref");
 assert.ok(redirectRule.expression.length < 4096, `redirect rule expression exceeds 4096 bytes: ${redirectRule.expression.length}`);
 assert.ok(
   redirectRule.expression.includes('http.host in {"claudeapp.agentsmirror.com" "claudeapp-r2.agentsmirror.com"}'),
@@ -209,6 +210,12 @@ for (const allowedUa of [
   "Claude-App-Manager/0.1.0",
   "PimpMyClaude/208 CFNetwork/3896.200.61 Darwin/27.2.0",
   "xingmang-ai-manager/0.2.24",
+  "codex2api",
+  "KJHAssistant/1.20.0",
+  "ChatGPTLauncher-CodexInstaller/1",
+  "YuluoGptSetup/2.0",
+  "XiaojiAssistant-CodexInstaller/1",
+  "CopilotBridgeNative/1.5.6",
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
   "aria2/1.37.0",
   "",
@@ -225,6 +232,9 @@ for (const blockedUa of [
   "yaoyao-claude/0.1",
   "JieshangAI-Installer/0.2",
   "LDXP-Card-Admin/1",
+  "NiceCodeTools/1.3.40",
+  "TianyuLink-Installer/0.4",
+  "yihaogpt-tools",
   asLatin1ByteString("Mozilla/5.0 越途AI智枢/1.9.0 Electron/43.2.0"),
 ]) {
   const r = await run("/latest/win-x64", { country: "CN", secondary: true, headers: { "User-Agent": blockedUa } });
