@@ -29,8 +29,15 @@
 </p>
 
 <p align="center">
-  <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a>
+  <a href="#readme-cn">中文</a> · <a href="#readme-en">English</a> · <a href="./TERMS.md">服务条款 · Terms of Service</a>
 </p>
+
+> [!WARNING]
+> **防骗与开源公益镜像合规提示 · Anti-Scam & Public-Interest Mirror Compliance Notice**
+>
+> 本项目完全**免费开源**，没有任何公众号扫码/回复密码门槛、付费引导或收费代下服务；在线下载域名（`claudeapp.agentsmirror.com`）属于 **`agentsmirror` 开源公益镜像基础设施**，**严禁任何商业软件、含充值/会员的管理工具、API 中转配置器、公众号密码引流页或电商倒卖者内嵌、反向代理或盗用本公益基础设施**（详见[《镜像与分发服务使用条款》](./TERMS.md)）。所有安装包均原样镜像自 Anthropic 官方渠道，零第三方捆绑，随附 `SHA256SUMS.txt` 供校验。请仅通过本仓库（`github.com/Wangnov/claude-app-mirror`）获取下载链接。
+>
+> This project is **100% free and open source** with no WeChat password gates, paywalls, or paid download links. The hosted download endpoints (`claudeapp.agentsmirror.com`) are part of the **`agentsmirror` non-commercial open-source public-interest mirror infrastructure** — **embedding, proxying, or exploiting this hosted mirror inside commercial, recharge-enabled, API-relay, or password-gated tools is strictly prohibited** (see [Terms of Service](./TERMS.md)). All installers are mirrored verbatim from Anthropic's official distribution channels with zero bundled software, accompanied by `SHA256SUMS.txt` for verification.
 
 ---
 
@@ -82,7 +89,7 @@ claude-app-v2.9939.4
 - Linux x64：`Claude-linux-x64.deb`
 - Linux arm64：`Claude-linux-arm64.deb`
 
-也可以直接使用 R2 短链接（面向国内网络，只保留最新版）：
+也可以直接使用镜像短链接（面向国内与全球网络，只保留最新版；所有 `/latest/*` 短链均返回 HTTP `302` 重定向，命令行使用 `curl` 下载时请加上 `-L` 并用 `-o` 指定目标文件名）：
 
 - macOS：[https://claudeapp.agentsmirror.com/latest/mac](https://claudeapp.agentsmirror.com/latest/mac)
 - Windows x64：[https://claudeapp.agentsmirror.com/latest/win-x64](https://claudeapp.agentsmirror.com/latest/win-x64)
@@ -90,6 +97,11 @@ claude-app-v2.9939.4
 - Linux x64：[https://claudeapp.agentsmirror.com/latest/linux-x64](https://claudeapp.agentsmirror.com/latest/linux-x64)
 - Linux arm64：[https://claudeapp.agentsmirror.com/latest/linux-arm64](https://claudeapp.agentsmirror.com/latest/linux-arm64)
 - 校验和：[https://claudeapp.agentsmirror.com/latest/checksums](https://claudeapp.agentsmirror.com/latest/checksums)
+
+```bash
+curl -fL -o Claude-mac-universal.dmg https://claudeapp.agentsmirror.com/latest/mac
+curl -fL -o SHA256SUMS.txt https://claudeapp.agentsmirror.com/latest/checksums
+```
 
 需要旧版本时，请到 [GitHub Releases](https://github.com/Wangnov/claude-app-mirror/releases) 按 tag 查找历史资产。
 
@@ -130,6 +142,11 @@ Cloudflare Cron Worker 每 15 分钟触发一次 GitHub Actions 的 `Mirror Clau
 - 不镜像官网的 `ClaudeSetup.exe` 在线引导器，也不镜像 Squirrel 增量包（`.nupkg` / 自动更新 `.zip`）
 - 不代理 Anthropic 的 Linux apt 源，只镜像直链 `.deb` 安装包
 - 不替代 Anthropic 的官方分发渠道
+
+## 服务条款与许可范围
+
+- 本仓库中的脚本与配置文件采用 [MIT License](./LICENSE) 开源；镜像原样分发的 Claude 桌面安装包归 Anthropic PBC 所有。
+- 在线托管域名（`claudeapp.agentsmirror.com` / `claudeapp-r2.agentsmirror.com`）与边缘存储带宽不属于 MIT 授权标的，所有网络访问与第三方客户端接入均受 [《镜像与分发服务使用条款》（TERMS.md）](./TERMS.md) 约束。纯免费非商业开源客户端遵循 [`Open Client Policy`](./TERMS.md#open-client-policy) 规范即可免审批直接调用。
 
 ---
 
@@ -181,7 +198,7 @@ Open the [latest GitHub Release](https://github.com/Wangnov/claude-app-mirror/re
 - Linux x64: `Claude-linux-x64.deb`
 - Linux arm64: `Claude-linux-arm64.deb`
 
-You can also use the R2 short links directly (mainland-China-friendly, latest-only):
+You can also use the mirror short links directly (latest-only; all `/latest/*` endpoints return HTTP `302` redirects, so pass `-L` and an explicit `-o` filename when using `curl`):
 
 - macOS: [https://claudeapp.agentsmirror.com/latest/mac](https://claudeapp.agentsmirror.com/latest/mac)
 - Windows x64: [https://claudeapp.agentsmirror.com/latest/win-x64](https://claudeapp.agentsmirror.com/latest/win-x64)
@@ -189,6 +206,11 @@ You can also use the R2 short links directly (mainland-China-friendly, latest-on
 - Linux x64: [https://claudeapp.agentsmirror.com/latest/linux-x64](https://claudeapp.agentsmirror.com/latest/linux-x64)
 - Linux arm64: [https://claudeapp.agentsmirror.com/latest/linux-arm64](https://claudeapp.agentsmirror.com/latest/linux-arm64)
 - Checksums: [https://claudeapp.agentsmirror.com/latest/checksums](https://claudeapp.agentsmirror.com/latest/checksums)
+
+```bash
+curl -fL -o Claude-mac-universal.dmg https://claudeapp.agentsmirror.com/latest/mac
+curl -fL -o SHA256SUMS.txt https://claudeapp.agentsmirror.com/latest/checksums
+```
 
 For older versions, use [GitHub Releases](https://github.com/Wangnov/claude-app-mirror/releases) and download assets from the matching tag.
 
@@ -229,3 +251,8 @@ If nothing changed, the workflow stops after the probe. If a new version appears
 - It does not mirror the website `ClaudeSetup.exe` online bootstrapper, nor Squirrel incremental packages (`.nupkg` / auto-update `.zip`)
 - It does not proxy Anthropic's Linux apt repository; only the direct `.deb` installers are mirrored
 - It is not a replacement for Anthropic's official distribution channels
+
+## Terms of Service & License Scope
+
+- Scripts and configuration files in this repository are licensed under the [MIT License](./LICENSE); mirrored Claude desktop installers belong to Anthropic PBC.
+- Hosted endpoints (`claudeapp.agentsmirror.com` / `claudeapp-r2.agentsmirror.com`) and edge storage bandwidth are not covered by MIT and are governed by the [Mirror & Distribution Service Terms (TERMS.md)](./TERMS.md). Purely free, non-commercial open-source tools may integrate without prior approval under the [Open Client Policy](./TERMS.md#open-client-policy).
