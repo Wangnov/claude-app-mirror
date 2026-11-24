@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "action": "redirect",
+  "description": "claudeapp: redirect R2 direct and encoded-path unauthorized clients to router for 403 policy notice",
+  "expression": "http.host in {\"claudeapp.agentsmirror.com\" \"claudeapp-r2.agentsmirror.com\"} and not (http.host eq \"claudeapp.agentsmirror.com\" and starts_with(http.request.uri.path, \"/latest/\")) and not starts_with(http.request.uri.path, \"/stats/\") and (lower(http.user_agent) contains \"kakou/\" or lower(http.user_agent) contains \"relayautoconfig\" or lower(http.user_agent) contains \"yrbridge-claudemirror\" or lower(http.user_agent) contains \"yaoyao-claude\" or lower(http.user_agent) contains \"jieshangai-installer\" or lower(http.user_agent) contains \"ldxp-card-admin\" or lower(http.user_agent) contains \"越途ai智枢\" or lower(http.user_agent) contains \"yuetunexus\" or lower(http.user_agent) contains \"yuluogptsetup\" or lower(http.user_agent) contains \"relayassistant\" or lower(http.user_agent) contains \"copilotbridgenative\" or lower(http.user_agent) contains \"nicecodetools\" or lower(http.user_agent) contains \"codex2api\" or lower(http.user_agent) contains \"yaoyao-chatgpt\" or lower(http.user_agent) contains \"xiaojiassistant\" or lower(http.user_agent) contains \"pojiamanager\" or lower(http.user_agent) contains \"tianyulink-installer\" or lower(http.user_agent) contains \"chatgptlauncher-codexinstaller\" or lower(http.user_agent) contains \"ccswitchpro-resourceworker\" or lower(http.user_agent) contains \"kjhassistant\" or lower(http.user_agent) contains \"c2a agent studio\" or lower(http.user_agent) contains \"codestudio lite\" or lower(http.user_agent) contains \"yihaogpt-tools\")",
+  "action_parameters": {
+    "from_value": {
+      "preserve_query_string": false,
+      "status_code": 307,
+      "target_url": {
+        "value": "https://claudeapp.agentsmirror.com/latest/manifest?mirror_policy=r2"
+      }
+    }
+  }
+}

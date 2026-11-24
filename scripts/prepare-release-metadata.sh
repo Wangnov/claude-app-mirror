@@ -135,7 +135,7 @@ jq \
   echo "- 校验和: ${r2_public_base_url}/latest/checksums"
   echo "- Manifest: ${r2_public_base_url}/latest/manifest"
   echo
-  echo "R2 短链是面向国内网络准备的下载镜像，只保留当前最新版。需要旧版本时，请到本仓库 Releases 按 tag 查找历史资产。"
+  echo "短链是面向国内与全球网络准备的下载镜像，只保留当前最新版（返回 HTTP 302 重定向，使用 \`curl\` 时请加 \`-L\`，如 \`curl -fLO ${r2_public_base_url}/latest/mac\`）。需要旧版本时，请到本仓库 Releases 按 tag 查找历史资产。"
   echo "<!-- latest-links-cn:end -->"
   echo
   echo "## 安装说明"
@@ -187,7 +187,7 @@ jq \
   echo "- Checksums: ${r2_public_base_url}/latest/checksums"
   echo "- Manifest: ${r2_public_base_url}/latest/manifest"
   echo
-  echo "These links always point to the newest mirrored version. For older versions, use this repository's Releases and download assets from the matching tag."
+  echo "These links always point to the newest mirrored version via HTTP 302 redirects (pass \`-L\` when using \`curl\`, e.g. \`curl -fLO ${r2_public_base_url}/latest/mac\`). For older versions, use this repository's Releases and download assets from the matching tag."
   echo "<!-- latest-links-en:end -->"
   echo
   echo "## Install"

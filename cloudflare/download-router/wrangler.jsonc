@@ -6,7 +6,46 @@
   "vars": {
     "GLOBAL_MIRROR_BASE_URL": "https://claudeapp-r2.agentsmirror.com",
     "SECONDARY_COUNTRY_CODES": "CN",
-    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "3600",
+    "SECONDARY_S3_SIGNED_URL_TTL_SECONDS": "600",
+    "SECONDARY_S3_METADATA_TTL_SECONDS": "120",
+    "ANALYTICS_EXTENDED_BLOBS": "1",
+    "BLOCK_MODE": "enforce",
+    "TERMS_HOME_URL": "https://github.com/Wangnov/claude-app-mirror",
+    "TERMS_URL": "https://github.com/Wangnov/claude-app-mirror/blob/main/TERMS.md",
+    "SOURCE_REPO_URL": "https://github.com/Wangnov/claude-app-mirror",
+    "OFFICIAL_CHANNELS_HINT": "claude.ai/download / downloads.claude.ai",
+    "INFRA_ATTRIBUTION": "part of the agentsmirror non-commercial open-source mirror network",
+    "INFRA_ATTRIBUTION_CN": "在线分发路由与存储属于 agentsmirror 开源公益镜像基础设施（含与姐妹项目共享的科研/开源公益节点体系）",
+    "BLOCKED_REFERER_HOSTS": [
+      "dqtx.cc",
+      "opchat.eu.org",
+      "ccwu.cc"
+    ],
+    "BLOCKED_UA_SUBSTRINGS": [
+      "kakou/",
+      "relayautoconfig",
+      "yrbridge-claudemirror",
+      "yaoyao-claude",
+      "jieshangai-installer",
+      "ldxp-card-admin",
+      "越途ai智枢",
+      "yuetunexus",
+      "yuluogptsetup",
+      "relayassistant",
+      "copilotbridgenative",
+      "nicecodetools",
+      "codex2api",
+      "yaoyao-chatgpt",
+      "xiaojiassistant",
+      "pojiamanager",
+      "tianyulink-installer",
+      "chatgptlauncher-codexinstaller",
+      "ccswitchpro-resourceworker",
+      "kjhassistant",
+      "c2a agent studio",
+      "codestudio lite",
+      "yihaogpt-tools"
+    ],
     "ROUTE_CONFIG": {
       "aliases": {
         "/latest/mac": {
@@ -62,6 +101,10 @@
     {
       "binding": "DOWNLOAD_ANALYTICS",
       "dataset": "claude_mirror_downloads"
+    },
+    {
+      "binding": "ABUSE_ANALYTICS",
+      "dataset": "claude_mirror_abuse"
     }
   ]
 }

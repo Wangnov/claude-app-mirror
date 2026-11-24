@@ -56,6 +56,16 @@ version_gt() {
   [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n1)" == "$1" ]]
 }
 
+# last_header_block <headers-blob> -> prints only the final HTTP response's headers (CR stripped).
+last_header_block() {
+  tr -d '\r' <<<"$1" |
+    awk '
+      /^HTTP\/[0-9.]+[[:space:]]+[0-9]+/ { block = $0 "\n"; next }
+      { block = block $0 "\n" }
+      END { printf "%s", block }
+    '
+}
+
 # header_value <headers-blob> <header-name> -> the (last) value, case-insensitive.
 header_value() {
   local headers="$1" name="$2"
@@ -74,17 +84,48 @@ header_value() {
     '
 }
 
+# gcs_md5_base64 <final-headers-blob> -> extracts base64 MD5 from x-goog-hash (comma-merged or multi-line).
+gcs_md5_base64() {
+  local headers="$1" stored_encoding
+  stored_encoding="$(header_value "$headers" "x-goog-stored-content-encoding" | tr '[:upper:]' '[:lower:]')"
+  if [[ -n "$stored_encoding" && "$stored_encoding" != "identity" ]]; then
+    printf '%s' ""
+    return 0
+  fi
+  tr -d '\r' <<<"$headers" |
+    awk '
+      BEGIN { md5 = "" }
+      {
+        line = $0
+        lower = tolower(line)
+        if (index(lower, "x-goog-hash:") == 1) {
+          sub("^[^:]+:[[:space:]]*", "", line)
+          n = split(line, parts, ",")
+          for (i = 1; i <= n; i++) {
+            part = parts[i]
+            sub("^[[:space:]]+", "", part)
+            sub("[[:space:]]+$", "", part)
+            if (index(tolower(part), "md5=") == 1) {
+              md5 = substr(part, 5)
+            }
+          }
+        }
+      }
+      END { printf "%s", md5 }
+    '
+}
+
 # probe_one <platform> <arch> <format> -> prints a JSON object describing the asset.
 probe_one() {
   local platform="$1" arch="$2" fmt="$3"
   local endpoint redirect_headers location file_name version build_hash
-  local asset_headers content_length etag last_modified
+  local asset_headers final_headers content_length etag last_modified gcs_md5
 
   endpoint="$update_api_base/api/desktop/$platform/$arch/$fmt/latest/redirect"
 
   redirect_headers="$(curl -fsS -D - -o /dev/null "${curl_retry_args[@]}" "$endpoint")" ||
     { echo "Failed to fetch redirect: $endpoint" >&2; return 1; }
-  location="$(header_value "$redirect_headers" "location")"
+  location="$(header_value "$(last_header_block "$redirect_headers")" "location")"
   if [[ -z "$location" ]]; then
     echo "No Location header from $endpoint" >&2
     return 1
@@ -103,9 +144,15 @@ probe_one() {
 
   asset_headers="$(curl -fsSI -L "${curl_retry_args[@]}" "$location")" ||
     { echo "Failed to HEAD artifact: $location" >&2; return 1; }
-  content_length="$(header_value "$asset_headers" "content-length")"
-  etag="$(header_value "$asset_headers" "etag")"
-  last_modified="$(header_value "$asset_headers" "last-modified")"
+  final_headers="$(last_header_block "$asset_headers")"
+  content_length="$(header_value "$final_headers" "content-length")"
+  if [[ ! "$content_length" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Missing or invalid Content-Length ('$content_length') from $location" >&2
+    return 1
+  fi
+  etag="$(header_value "$final_headers" "etag")"
+  last_modified="$(header_value "$final_headers" "last-modified")"
+  gcs_md5="$(gcs_md5_base64 "$final_headers")"
 
   jq -n \
     --arg platform "$platform" \
@@ -119,6 +166,7 @@ probe_one() {
     --argjson contentLength "$(json_number "$content_length")" \
     --arg etag "$etag" \
     --arg lastModified "$last_modified" \
+    --arg md5 "$gcs_md5" \
     '{
       platform: $platform,
       arch: $arch,
@@ -130,7 +178,8 @@ probe_one() {
       buildHash: $buildHash,
       contentLength: $contentLength,
       etag: $etag,
-      lastModified: $lastModified
+      lastModified: $lastModified,
+      md5: $md5
     }'
 }
 
