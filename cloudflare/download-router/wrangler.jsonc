@@ -36,7 +36,8 @@
       "ccswitchpro-resourceworker",
       "nicecodetools",
       "tianyulink-installer",
-      "yihaogpt-tools"
+      "yihaogpt-tools",
+      "funtoolkit/"
     ],
     "ROUTE_CONFIG": {
       "aliases": {

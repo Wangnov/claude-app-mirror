@@ -235,6 +235,7 @@ for (const blockedUa of [
   "NiceCodeTools/1.3.40",
   "TianyuLink-Installer/0.4",
   "yihaogpt-tools",
+  "funtoolkit/0.1",
   asLatin1ByteString("Mozilla/5.0 越途AI智枢/1.9.0 Electron/43.2.0"),
 ]) {
   const r = await run("/latest/win-x64", { country: "CN", secondary: true, headers: { "User-Agent": blockedUa } });
