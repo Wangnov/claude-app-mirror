@@ -1,0 +1,10 @@
+{
+  "ref": "claudeapp_r2_large_binary_cache_bypass",
+  "enabled": true,
+  "action": "set_cache_settings",
+  "description": "claudeapp-r2: bypass edge cache on installer aliases so Free-plan (>512MB) cache fill never strips HTTP Range",
+  "expression": "http.host eq \"claudeapp-r2.agentsmirror.com\" and http.request.uri.path in {\"/latest/mac\" \"/latest/win-x64\" \"/latest/win-arm64\" \"/latest/linux-x64\" \"/latest/linux-arm64\"}",
+  "action_parameters": {
+    "cache": false
+  }
+}

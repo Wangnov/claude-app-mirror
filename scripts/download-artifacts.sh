@@ -50,6 +50,9 @@ curl_retry_args=(
   --retry-delay 2
   --retry-max-time 1800
   --connect-timeout 20
+  --max-time "${DOWNLOAD_MAX_TIME_SECONDS:-900}"
+  --speed-limit 1024
+  --speed-time 60
   --retry-all-errors
 )
 
@@ -103,6 +106,11 @@ download() {
     exit 1
   fi
 
+  local pre_existing=false
+  if [[ -f "$output" ]] && validate_size "$output" "$expected" 2>/dev/null && validate_md5 "$output" "$expected_md5" 2>/dev/null; then
+    pre_existing=true
+  fi
+
   tmp_output="${output}.part"
   delay="$download_retry_delay"
 
@@ -121,7 +129,10 @@ download() {
       return 0
     fi
 
-    rm -f "$tmp_output" "$output"
+    rm -f "$tmp_output"
+    if [[ "$pre_existing" != "true" ]]; then
+      rm -f "$output"
+    fi
     if ((attempt < download_max_attempts && delay > 0)); then
       sleep "$delay"
       delay=$((delay * 2))
