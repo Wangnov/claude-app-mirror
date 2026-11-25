@@ -10,6 +10,7 @@ import {
   deriveReleaseTag,
   handleApiRequest,
   pruneAbandonedStageObjects,
+  reconcileSync,
   uploadObjectToStage,
 } from "../src/core.js";
 
@@ -184,6 +185,37 @@ test("commits the alias and clears its rollback backup on success", async () => 
   assert.equal(s3.objects.has("latest/linux-x64.rollback"), false);
 });
 
+test("treats server-completed COPY that returned transient 502 as succeeded without hitting IHEP overwrite error", async () => {
+  const stageKey = "staging/test/instance-1/objects/linux-x64";
+  let stageCopyCalls = 0;
+  const s3 = createMockS3({
+    onCopy(sourceKey, destinationKey, store) {
+      if (sourceKey === stageKey && destinationKey === "latest/linux-x64") {
+        stageCopyCalls += 1;
+        if (stageCopyCalls === 1) {
+          store.set(destinationKey, objectEntry("next-release"));
+          return new Response("Bad Gateway", { status: 502 });
+        }
+        if (store.has(destinationKey)) {
+          return new Response("<Error><Code>InternalError</Code></Error>", { status: 502 });
+        }
+      }
+      return null;
+    },
+  });
+  s3.objects.set(stageKey, objectEntry("next-release"));
+  s3.objects.set("latest/linux-x64", objectEntry("published-release"));
+  globalThis.fetch = s3.fetch;
+
+  const item = { id: "linux-x64", stageKey, aliasKeys: ["latest/linux-x64"] };
+  const commit = await commitObjectToAliases(fixtureEnv(new Map()), item);
+
+  assert.deepEqual(commit.aliases, [{ key: "latest/linux-x64", size: 12 }]);
+  assert.equal(stageCopyCalls, 1);
+  assert.equal(text(s3.objects.get("latest/linux-x64").bytes), "next-release");
+  assert.equal(s3.objects.has("latest/linux-x64.rollback"), false);
+});
+
 test("prunes abandoned staging objects and multipart uploads without touching active work", async () => {
   const s3 = createMockS3();
   const old = new Date("2020-01-01T00:00:00Z");
@@ -346,6 +378,83 @@ test("handleApiRequest enforces auth, exposes /health and /sync/plan, and reconc
   assert.equal(createdWorkflows.length, 1);
 });
 
+test("retries transient S3 5xx and network errors per multipart part and deduplicates reconcileSync", async () => {
+  const manifest = fixtureManifest();
+  const tag = deriveReleaseTag(manifest);
+  const payload = "0123456789abcdefghijklmnopqrstuvwxyz";
+  const r2Objects = fixtureR2Objects(manifest, {
+    "latest/win-x64": payload,
+  });
+  let part2Failures = 0;
+  let abortedCount = 0;
+  const s3 = createMockS3({
+    onUploadPart(partNumber) {
+      if (partNumber === 2 && part2Failures < 2) {
+        part2Failures += 1;
+        if (part2Failures === 1) {
+          return new Response("<Error><Code>InternalError</Code></Error>", { status: 500 });
+        }
+        throw new TypeError("fetch failed");
+      }
+      return null;
+    },
+    onAbortMultipart() {
+      abortedCount += 1;
+    },
+  });
+  globalThis.fetch = s3.fetch;
+
+  const instances = new Map();
+  let createCalls = 0;
+  const env = {
+    ...fixtureEnv(r2Objects),
+    SECONDARY_MIRROR_WORKFLOW: {
+      async create(opts) {
+        createCalls += 1;
+        const inst = {
+          id: opts.id,
+          currentState: "running",
+          async status() {
+            return { status: this.currentState };
+          },
+          async restart() {
+            this.currentState = "running";
+          },
+        };
+        instances.set(opts.id, inst);
+        return inst;
+      },
+      async get(id) {
+        const found = instances.get(id);
+        if (!found) throw new Error("not found");
+        return found;
+      },
+    },
+  };
+
+  const plan = decoratePlanWithStage(buildObjectPlan(manifest, tag), "instance-retry", {
+    SECONDARY_SYNC_STAGE_PREFIX: "staging/test",
+  });
+  const item = plan.items.find((entry) => entry.id === "win-x64");
+  const upload = await uploadObjectToStage(env, item, {
+    forceUpload: true,
+    singlePutMaxBytes: 8,
+    partSizeBytes: 8,
+    minPartSizeBytes: 1,
+  });
+  assert.equal(upload.uploaded, true);
+  assert.equal(part2Failures, 2);
+  assert.equal(abortedCount, 0);
+  assert.equal(text(s3.objects.get(item.stageKey).bytes), payload);
+
+  const r1 = await reconcileSync(env, {});
+  const r2 = await reconcileSync(env, {});
+  assert.equal(r1.created, true);
+  assert.equal(r2.reused, true);
+  assert.equal(r2.id, r1.id);
+  assert.equal(createCalls, 1);
+});
+
 function fixtureManifest() {
   return {
     schemaVersion: 2,
@@ -406,6 +515,7 @@ function fixtureEnv(r2Objects) {
     SECONDARY_S3_REGION: "auto",
     SECONDARY_S3_ACCESS_KEY_ID: "key",
     SECONDARY_S3_SECRET_ACCESS_KEY: "secret",
+    SECONDARY_S3_RETRY_BASE_DELAY_MS: "0",
   };
 }
 
@@ -443,6 +553,9 @@ function createMockS3(options = {}) {
   const uploads = new Map();
   let uploadCounter = 0;
   const failCopyFrom = options.failCopyFrom || (() => false);
+  const onCopy = options.onCopy || (() => null);
+  const onUploadPart = options.onUploadPart || (() => null);
+  const onAbortMultipart = options.onAbortMultipart || (() => {});
 
   async function fetch(input, init = {}) {
     const url = new URL(input);
@@ -512,9 +625,14 @@ function createMockS3(options = {}) {
     }
 
     if (method === "PUT" && url.searchParams.has("partNumber")) {
+      const partNumber = Number(url.searchParams.get("partNumber"));
+      const injected = onUploadPart(partNumber);
+      if (injected) {
+        return injected;
+      }
       const uploadId = url.searchParams.get("uploadId");
       const upload = uploads.get(uploadId);
-      upload.parts.set(Number(url.searchParams.get("partNumber")), await bodyBytes(init.body));
+      upload.parts.set(partNumber, await bodyBytes(init.body));
       return new Response(null, { status: 200, headers: { etag: `"part-${upload.parts.size}"` } });
     }
 
@@ -527,12 +645,17 @@ function createMockS3(options = {}) {
     }
 
     if (method === "DELETE" && url.searchParams.has("uploadId")) {
+      onAbortMultipart(url.searchParams.get("uploadId"));
       uploads.delete(url.searchParams.get("uploadId"));
       return new Response(null, { status: 204 });
     }
 
     if (method === "PUT" && headers.has("x-amz-copy-source")) {
       const sourceKey = parseCopySource(headers.get("x-amz-copy-source"));
+      const injectedCopy = onCopy(sourceKey, key, objects);
+      if (injectedCopy) {
+        return injectedCopy;
+      }
       if (failCopyFrom(sourceKey)) {
         return new Response("<Error><Code>InternalError</Code></Error>", { status: 500 });
       }
