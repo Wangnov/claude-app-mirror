@@ -21,6 +21,7 @@ permissions:
 env:
   R2_BUCKET_NAME: claude-app-mirror
   R2_PUBLIC_BASE_URL: https://claudeapp.agentsmirror.com
+  R2_ORIGIN_BASE_URL: https://claudeapp-r2.agentsmirror.com
 
 concurrency:
   group: claude-app-mirror
@@ -32,6 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_release: ${{ steps.probe.outputs.should_release }}
+      repair_r2_only: ${{ steps.probe.outputs.repair_r2_only }}
       release_tag: ${{ steps.probe.outputs.release_tag }}
       latest_tag: ${{ steps.probe.outputs.latest_tag }}
       skip_reason: ${{ steps.probe.outputs.skip_reason }}
@@ -63,23 +65,29 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Wangnov/agents-mirror-kit
-          ref: v0.3.3
+          ref: v0.3.4
           path: .mirror-kit
 
       - name: Restore probe manifest
+        if: needs.probe.outputs.repair_r2_only != 'true'
+        env:
+          PROBE_MANIFEST_JSON: ${{ needs.probe.outputs.manifest }}
         shell: bash
         run: |
           set -euo pipefail
-          cat > probe-manifest.json <<'JSON'
-          ${{ needs.probe.outputs.manifest }}
-          JSON
+          printf '%s\n' "$PROBE_MANIFEST_JSON" > probe-manifest.json
+          jq -e 'type == "object" and (.version | type == "string")' probe-manifest.json >/dev/null
 
       - name: Download installers
+        if: needs.probe.outputs.repair_r2_only != 'true'
         shell: bash
         run: bash scripts/download-artifacts.sh dist probe-manifest.json
 
       - name: Prepare release metadata
+        if: needs.probe.outputs.repair_r2_only != 'true'
         id: meta
+        env:
+          PROBE_RELEASE_TAG: ${{ needs.probe.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -87,17 +95,20 @@ jobs:
             probe-manifest.json \
             dist \
             "$R2_PUBLIC_BASE_URL" \
-            "${{ needs.probe.outputs.release_tag }}"
+            "$PROBE_RELEASE_TAG"
 
       - name: Publish GitHub Release
+        if: needs.probe.outputs.repair_r2_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          META_TAG: ${{ steps.meta.outputs.tag }}
+          META_TITLE: ${{ steps.meta.outputs.title }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "${{ steps.meta.outputs.tag }}" \
-            --title "${{ steps.meta.outputs.title }}" \
+          gh release create "$META_TAG" \
+            --title "$META_TITLE" \
             --notes-file release-notes.md \
             dist/Claude-mac-universal.dmg \
             dist/Claude-win-x64.msix \
@@ -107,14 +118,91 @@ jobs:
             SHA256SUMS.txt \
             release-manifest.json
 
+      - name: Download verified assets from existing GitHub Release for R2 repair
+        if: needs.probe.outputs.repair_r2_only == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REPAIR_TAG: ${{ needs.probe.outputs.release_tag }}
+          PROBE_MANIFEST_JSON: ${{ needs.probe.outputs.manifest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$REPAIR_TAG"
+          mkdir -p dist repair-download
+          printf '%s\n' "$PROBE_MANIFEST_JSON" > repair-download/probed-manifest.json
+          gh release download "$REPAIR_TAG" \
+            -p Claude-mac-universal.dmg \
+            -p Claude-win-x64.msix \
+            -p Claude-win-arm64.msix \
+            -p Claude-linux-x64.deb \
+            -p Claude-linux-arm64.deb \
+            -p SHA256SUMS.txt \
+            -p release-manifest.json \
+            -D repair-download
+          jq -e -n \
+            --slurpfile probed repair-download/probed-manifest.json \
+            --slurpfile rel repair-download/release-manifest.json '
+            def eq($x; $y):
+              ($x.url == $y.url) and ($x.contentLength == $y.contentLength)
+              and (((($x.md5 // "") == "") or (($y.md5 // "") == "")) or ($x.md5 == $y.md5));
+            ($probed[0].sources) as $p | ($rel[0].sources) as $r
+            | eq($p.macos.universal; $r.macos.universal)
+              and eq($p.windows.x64; $r.windows.x64)
+              and eq($p.windows.arm64; $r.windows.arm64)
+              and eq($p.linux.x64; $r.linux.x64)
+              and eq($p.linux.arm64; $r.linux.arm64)
+          ' >/dev/null
+          (
+            cd repair-download
+            manifest_sha="$(sha256sum release-manifest.json | awk '{print tolower($1)}')"
+            awk -v manifest_sha="$manifest_sha" '
+              NF == 0 { next }
+              {
+                digest = tolower($1)
+                name = $0
+                sub(/^[^[:space:]]+[[:space:]]+\*?/, "", name)
+                if (digest !~ /^[0-9a-f]{64}$/ || name == "" || (name in seen)) exit 1
+                seen[name] = digest
+                count++
+              }
+              END {
+                if (count != 6) exit 1
+                if (seen["release-manifest.json"] != manifest_sha) exit 1
+                if (!("Claude-mac-universal.dmg" in seen)) exit 1
+                if (!("Claude-win-x64.msix" in seen)) exit 1
+                if (!("Claude-win-arm64.msix" in seen)) exit 1
+                if (!("Claude-linux-x64.deb" in seen)) exit 1
+                if (!("Claude-linux-arm64.deb" in seen)) exit 1
+              }
+            ' SHA256SUMS.txt
+            for pair in \
+              "Claude-mac-universal.dmg:.sources.macos.universal.sha256" \
+              "Claude-win-x64.msix:.sources.windows.x64.sha256" \
+              "Claude-win-arm64.msix:.sources.windows.arm64.sha256" \
+              "Claude-linux-x64.deb:.sources.linux.x64.sha256" \
+              "Claude-linux-arm64.deb:.sources.linux.arm64.sha256"; do
+              fname="${pair%%:*}"
+              jq_expr="${pair#*:}"
+              expected_hex="$(jq -r "$jq_expr // \"\"" release-manifest.json | tr '[:upper:]' '[:lower:]')"
+              [[ "$expected_hex" =~ ^[0-9a-f]{64}$ ]]
+              grep -Fiq "${expected_hex}  ${fname}" SHA256SUMS.txt
+            done
+            sha256sum --strict -c SHA256SUMS.txt
+          )
+          mv repair-download/SHA256SUMS.txt SHA256SUMS.txt
+          mv repair-download/release-manifest.json release-manifest.json
+          mv repair-download/Claude-* dist/
+
       - name: Remove latest links from previous release notes
-        if: needs.probe.outputs.latest_tag != ''
+        if: needs.probe.outputs.repair_r2_only != 'true' && needs.probe.outputs.latest_tag != '' && needs.probe.outputs.latest_tag != steps.meta.outputs.tag
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          PREV_LATEST_TAG: ${{ needs.probe.outputs.latest_tag }}
         shell: bash
-        run: bash .mirror-kit/scripts/remove-latest-links-from-release-notes.sh "${{ needs.probe.outputs.latest_tag }}"
+        run: bash .mirror-kit/scripts/remove-latest-links-from-release-notes.sh "$PREV_LATEST_TAG"
 
       - name: Ensure AWS CLI
         shell: bash
@@ -133,6 +221,7 @@ jobs:
           AWS_REQUEST_CHECKSUM_CALCULATION: when_required
           AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
           R2_S3_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          META_TAG: ${{ steps.meta.outputs.tag || needs.probe.outputs.release_tag }}
         shell: bash
         run: |
           set -euo pipefail
@@ -148,7 +237,7 @@ jobs:
           test -f "$linux_x64"
           test -f "$linux_arm64"
 
-          staging_prefix="staging/${{ steps.meta.outputs.tag }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          staging_prefix="staging/${META_TAG}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup_staging() {
             bash .mirror-kit/scripts/clear-r2-prefix.sh "$R2_BUCKET_NAME" "$staging_prefix" || true
           }
@@ -195,7 +284,7 @@ jobs:
           CF_SECONDARY_SYNC_URL: ${{ secrets.CF_SECONDARY_SYNC_URL }}
           CF_SECONDARY_SYNC_TOKEN: ${{ secrets.CF_SECONDARY_SYNC_TOKEN }}
           SECONDARY_SYNC_MODE: start
-          SECONDARY_SYNC_RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          SECONDARY_SYNC_RELEASE_TAG: ${{ steps.meta.outputs.tag || needs.probe.outputs.release_tag }}
           SECONDARY_SYNC_FORCE: ${{ inputs.force_release || 'false' }}
           SECONDARY_SYNC_TIMEOUT_SECONDS: 2400
         shell: bash

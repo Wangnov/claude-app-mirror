@@ -12,6 +12,9 @@ const wrangler = JSON.parse(
 const redirectRule = JSON.parse(
   readFileSync(new URL("../zone-rules/claudeapp-redirect.json", import.meta.url), "utf8"),
 );
+const cacheBypassRule = JSON.parse(
+  readFileSync(new URL("../zone-rules/claudeapp-r2-cache-bypass.json", import.meta.url), "utf8"),
+);
 const termsMarkdown = readFileSync(new URL("../../TERMS.md", import.meta.url), "utf8");
 
 const vars = wrangler.vars || {};
@@ -57,8 +60,11 @@ assert.ok(!termsMarkdown.includes("公开通报"), "TERMS.md must not include '�
 assert.ok(!termsMarkdown.includes("IHEP"), "TERMS.md must not claim CAS IHEP usage while secondary S3 is unconfigured");
 
 // Validate Zone Single Redirect Rule stays in sync with BLOCKED_UA_SUBSTRINGS and within 4KB limit.
+assert.equal(redirectRule.enabled, true, "redirect rule must be enabled");
+assert.equal(redirectRule.action, "redirect", "redirect rule must use redirect action");
 assert.equal(redirectRule.ref, "claudeapp_unauthorized_ua_redirect", "redirect rule must declare explicit ref");
-assert.ok(redirectRule.expression.length < 4096, `redirect rule expression exceeds 4096 bytes: ${redirectRule.expression.length}`);
+const redirectExprBytes = Buffer.byteLength(redirectRule.expression, "utf8");
+assert.ok(redirectExprBytes < 4096, `redirect rule expression exceeds 4096 UTF-8 bytes: ${redirectExprBytes}`);
 assert.ok(
   redirectRule.expression.includes('http.host in {"claudeapp.agentsmirror.com" "claudeapp-r2.agentsmirror.com"}'),
   "redirect rule must cover both claudeapp and claudeapp-r2 hosts to prevent %2F encoded path bypass",
@@ -90,6 +96,27 @@ for (const ruleUa of ruleUaMatches) {
   );
 }
 assert.deepEqual(ruleUaMatches, vars.BLOCKED_UA_SUBSTRINGS, "redirect rule UA list should stay 1:1 aligned with BLOCKED_UA_SUBSTRINGS");
+
+// Validate Cache Bypass Rule on claudeapp-r2 covers all 5 installer aliases and excludes metadata/stats.
+assert.equal(cacheBypassRule.enabled, true, "cache bypass rule must be enabled");
+assert.equal(cacheBypassRule.ref, "claudeapp_r2_large_binary_cache_bypass");
+assert.equal(cacheBypassRule.action, "set_cache_settings");
+assert.equal(cacheBypassRule.action_parameters?.cache, false);
+assert.ok(Buffer.byteLength(cacheBypassRule.expression, "utf8") < 4096);
+assert.ok(cacheBypassRule.expression.includes('http.host eq "claudeapp-r2.agentsmirror.com"'));
+for (const [aliasPath, aliasSpec] of Object.entries(routeConfig.aliases)) {
+  if (aliasSpec.category === "installer") {
+    assert.ok(
+      cacheBypassRule.expression.includes(`"${aliasPath}"`),
+      `cache bypass rule must cover installer alias '${aliasPath}'`,
+    );
+  } else {
+    assert.ok(
+      !cacheBypassRule.expression.includes(`"${aliasPath}"`),
+      `cache bypass rule must not match metadata alias '${aliasPath}'`,
+    );
+  }
+}
 
 assert.deepEqual(
   (wrangler.routes || []).map((route) => route.pattern),
@@ -176,6 +203,10 @@ for (const [path, filename, contentType] of installerCases) {
   assert.equal(loc.searchParams.get("response-content-disposition"), `attachment; filename="${filename}"`);
   assert.equal(loc.searchParams.get("response-content-type"), contentType);
   assert.deepEqual(cnResult.points[0].blobs.slice(0, 3), ["secondary", "CN", "installer"]);
+
+  const cnHead = await run(path, { country: "CN", secondary: true, method: "HEAD", headers: { "User-Agent": "curl/8.13.0" } });
+  assert.equal(cnHead.status, 302);
+  assert.equal(cnHead.points.length, 0);
 }
 
 // Phase 1 posture (no SECONDARY_S3_* secrets): CN requests safely fall back to global R2 302.

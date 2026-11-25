@@ -26,6 +26,14 @@ sanitize_tag_part() {
   tr -cs 'A-Za-z0-9._-' '-' <<<"$1" | sed -E 's/^-+//; s/-+$//'
 }
 
+validate_safe_token() {
+  local label="$1" value="$2"
+  if [[ ! "$value" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || [[ "$value" == *".."* ]]; then
+    echo "Invalid $label: '$value'" >&2
+    exit 1
+  fi
+}
+
 if [[ ! -f "$probe_manifest" ]]; then
   echo "Missing probe manifest: $probe_manifest" >&2
   exit 1
@@ -36,6 +44,7 @@ if [[ -z "$version" ]]; then
   echo "Probe manifest is missing .version" >&2
   exit 1
 fi
+validate_safe_token "version" "$version"
 
 mac_file="$artifacts_dir/Claude-mac-universal.dmg"
 win_x64_file="$artifacts_dir/Claude-win-x64.msix"
@@ -67,13 +76,16 @@ linux_x64_version="$(jq -r '.sources.linux.x64.version' "$probe_manifest")"
 linux_arm64_version="$(jq -r '.sources.linux.arm64.version' "$probe_manifest")"
 
 if [[ -n "$release_tag_override" ]]; then
+  validate_safe_token "release tag override" "$release_tag_override"
   tag="$release_tag_override"
 else
   tag="claude-app-v$(sanitize_tag_part "$version")"
 fi
+validate_safe_token "release tag" "$tag"
 title="Claude App Mirror $version"
 
 jq \
+  --arg releaseTag "$tag" \
   --arg macSha "$mac_sha" \
   --arg winX64Sha "$win_x64_sha" \
   --arg winArm64Sha "$win_arm64_sha" \
@@ -81,6 +93,7 @@ jq \
   --arg linuxArm64Sha "$linux_arm64_sha" \
   '
   .schemaVersion = 2
+  | .releaseTag = $releaseTag
   | .sources.macos.universal.sha256 = $macSha
   | .sources.macos.universal.assetName = "Claude-mac-universal.dmg"
   | .sources.windows.x64.sha256 = $winX64Sha

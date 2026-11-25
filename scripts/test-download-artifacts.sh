@@ -136,6 +136,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(data)
             return
 
+        if parts and parts[0] == "r2-503":
+            self.send_response(503)
+            self.end_headers()
+            return
+
         self.send_response(404)
         self.end_headers()
 
@@ -175,6 +180,10 @@ cat > "$tmp_dir/mock-bin/gh" <<EOF
 set -euo pipefail
 if [[ "\${1:-}" == "release" && "\${2:-}" == "list" ]]; then
   printf 'claude-app-v6.28899.6\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "release" && "\${2:-}" == "view" && "\${3:-}" == "--json" ]]; then
+  printf '{"tagName":"claude-app-v6.28899.6"}\n'
   exit 0
 fi
 if [[ "\${1:-}" == "release" && "\${2:-}" == "download" ]]; then
@@ -246,5 +255,183 @@ if DOWNLOAD_MAX_ATTEMPTS=2 DOWNLOAD_RETRY_DELAY_SECONDS=0 \
 fi
 [[ ! -f "$tmp_dir/out-corrupt/Claude-win-x64.msix" ]]
 [[ ! -f "$tmp_dir/out-corrupt/Claude-win-x64.msix.part" ]]
+
+# --- Case 6: Staggered non-macOS update when base tag already exists emits revision tag instead of skipping ---
+printf 'normal' > "$mode_file"
+jq '.sources.windows.x64.url = "http://127.0.0.1:1/old-win-x64.msix"' "$tmp_dir/prev-release-manifest.json" > "$tmp_dir/staggered-prev.json"
+cat > "$tmp_dir/mock-bin/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "release" && "\${2:-}" == "list" ]]; then
+  printf 'claude-app-v6.28899.6\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "release" && "\${2:-}" == "view" ]]; then
+  if [[ "\${GH_VIEW_503:-}" == "true" ]]; then
+    echo "HTTP 503: upstream not found" >&2
+    exit 1
+  fi
+  if [[ "\${3:-}" == "--json" || "\${3:-}" == "claude-app-v6.28899.6" ]]; then
+    printf '{"tagName":"claude-app-v6.28899.6"}\n'
+    exit 0
+  fi
+  echo "release not found" >&2
+  exit 1
+fi
+if [[ "\${1:-}" == "release" && "\${2:-}" == "download" ]]; then
+  dest="."
+  while [[ \$# -gt 0 ]]; do
+    if [[ "\$1" == "-D" ]]; then dest="\$2"; shift 2; else shift; fi
+  done
+  cp "$tmp_dir/staggered-prev.json" "\$dest/release-manifest.json"
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$tmp_dir/mock-bin/gh"
+
+staggered_out="$(
+  PATH="$tmp_dir/mock-bin:$PATH" \
+  UPDATE_API_BASE="http://127.0.0.1:$port" \
+  MANIFEST_PATH="$tmp_dir/probed-staggered.json" \
+    bash "$repo_root/scripts/probe-release.sh"
+)"
+grep -Fxq "should_release=true" <<<"$staggered_out"
+grep -Fxq "repair_r2_only=false" <<<"$staggered_out"
+grep -Eq '^release_tag=claude-app-v6\.28899\.6-[0-9a-f]{8}$' <<<"$staggered_out"
+
+# --- Case 7: R2 latest/* drift triggers repair_r2_only=true using existing latest_tag when GitHub Release already matches ---
+cp "$tmp_dir/probed-manifest.json" "$tmp_dir/staggered-prev.json"
+repair_out="$(
+  PATH="$tmp_dir/mock-bin:$PATH" \
+  UPDATE_API_BASE="http://127.0.0.1:$port" \
+  R2_PUBLIC_BASE_URL="http://127.0.0.1:$port/missing-r2" \
+  MANIFEST_PATH="$tmp_dir/probed-repair.json" \
+    bash "$repo_root/scripts/probe-release.sh"
+)"
+grep -Fxq "should_release=true" <<<"$repair_out"
+grep -Fxq "repair_r2_only=true" <<<"$repair_out"
+grep -Fxq "release_tag=claude-app-v6.28899.6" <<<"$repair_out"
+
+# --- Case 8: Final release 6.28899.6 after 6.28899.6-rc.1 is NOT treated as a downgrade ---
+jq '.version = "6.28899.6-rc.1" | .sources.windows.x64.url = "http://127.0.0.1:1/rc.msix"' \
+  "$tmp_dir/probed-manifest.json" > "$tmp_dir/staggered-prev.json"
+rc_upgrade_out="$(
+  PATH="$tmp_dir/mock-bin:$PATH" \
+  UPDATE_API_BASE="http://127.0.0.1:$port" \
+  MANIFEST_PATH="$tmp_dir/probed-rc-upgrade.json" \
+    bash "$repo_root/scripts/probe-release.sh"
+)"
+grep -Fxq "should_release=true" <<<"$rc_upgrade_out"
+grep -Fxq "repair_r2_only=false" <<<"$rc_upgrade_out"
+
+# --- Case 9: Numeric prerelease comparison (rc.10 > rc.2) and fail-closed on non-404 gh release view ---
+jq '.version = "6.28899.6-rc.10" | .sources.windows.x64.url = "http://127.0.0.1:1/rc10.msix"' \
+  "$tmp_dir/probed-manifest.json" > "$tmp_dir/staggered-prev.json"
+# Probed version is 6.28899.6 (final > rc.10 -> should_release=true); also test gh_release_exists 503 fail-closed!
+if PATH="$tmp_dir/mock-bin:$PATH" \
+   GH_VIEW_503="true" \
+   UPDATE_API_BASE="http://127.0.0.1:$port" \
+   MANIFEST_PATH="$tmp_dir/probed-503.json" \
+     bash "$repo_root/scripts/probe-release.sh" 2>/dev/null; then
+  echo "Expected non-404 gh release view error (HTTP 503) to fail closed" >&2
+  exit 1
+fi
+
+# --- Case 10: Manual RELEASE_TAG pointing to an older existing tag with FORCE_RELEASE=false MUST NOT downgrade R2 ---
+jq '.version = "7.0.0" | .sources.windows.x64.url = "http://127.0.0.1:1/Claude-win-x64-7.0.0.msix"' \
+  "$tmp_dir/probed-manifest.json" > "$tmp_dir/latest-7.json"
+cp "$tmp_dir/probed-manifest.json" "$tmp_dir/older-6.json"
+cat > "$tmp_dir/mock-bin/gh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "release" && "\${2:-}" == "list" ]]; then
+  # Simulate a later-created backfill release (6.0.0) hiding Latest (7.0.0) in gh release list!
+  printf 'claude-app-v6.0.0\n'
+  exit 0
+fi
+if [[ "\${1:-}" == "release" && "\${2:-}" == "view" ]]; then
+  if [[ "\${3:-}" == "--json" ]]; then
+    echo "Notice: checking /releases/latest on GitHub API" >&2
+    printf '{"tagName":"claude-app-v7.0.0"}\n'
+    exit 0
+  fi
+  if [[ "\${3:-}" == "claude-app-v7.0.0" || "\${3:-}" == "claude-app-v6.28899.6" || "\${3:-}" == "claude-app-v6.0.0" ]]; then
+    printf '{"tagName":"%s"}\n' "\${3}"
+    exit 0
+  fi
+  echo "release not found" >&2
+  exit 1
+fi
+if [[ "\${1:-}" == "release" && "\${2:-}" == "download" ]]; then
+  tag="\${3:-}"
+  dest="."
+  while [[ \$# -gt 0 ]]; do
+    if [[ "\$1" == "-D" ]]; then dest="\$2"; shift 2; else shift; fi
+  done
+  if [[ "\$tag" == "claude-app-v7.0.0" ]]; then
+    cp "$tmp_dir/latest-7.json" "\$dest/release-manifest.json"
+  else
+    cp "$tmp_dir/older-6.json" "\$dest/release-manifest.json"
+  fi
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$tmp_dir/mock-bin/gh"
+
+downgrade_manual_out="$(
+  PATH="$tmp_dir/mock-bin:$PATH" \
+  UPDATE_API_BASE="http://127.0.0.1:$port" \
+  FORCE_RELEASE="false" \
+  RELEASE_TAG="claude-app-v6.28899.6" \
+  R2_PUBLIC_BASE_URL="http://127.0.0.1:$port/missing-r2" \
+  MANIFEST_PATH="$tmp_dir/probed-downgrade-manual.json" \
+    bash "$repo_root/scripts/probe-release.sh"
+)"
+grep -Fxq "should_release=false" <<<"$downgrade_manual_out"
+grep -Fxq "repair_r2_only=false" <<<"$downgrade_manual_out"
+
+# --- Case 11: Arbitrary-precision >53-bit numeric version comparison (6.9007199254740993.0 > 6.9007199254740992.0) ---
+jq '.version = "6.9007199254740993.0"' "$tmp_dir/probed-manifest.json" > "$tmp_dir/latest-7.json"
+# Probed version is 6.28899.6 < 6.9007199254740993.0; also directly test 9007199254740993 vs 9007199254740992 via sourced function!
+(
+  # Extract version_gt function from probe-release.sh and verify >53-bit integer precision + 2-component float trap (7.10 > 7.1) on local awk
+  eval "$(sed -n '/^version_gt()/,/^}/p' "$repo_root/scripts/probe-release.sh")"
+  version_gt "6.9007199254740993.0" "6.9007199254740992.0"
+  version_gt "7.10" "7.1"
+  if version_gt "7.1" "7.10"; then exit 1; fi
+  if version_gt "7.0" "7"; then exit 1; fi
+  if version_gt "6.9007199254740992.0" "6.9007199254740993.0"; then exit 1; fi
+  if version_gt "6.09007199254740993.0" "6.9007199254740993.0"; then exit 1; fi
+)
+
+# --- Case 12: R2 live-version lookup HTTP 503 fails closed instead of permitting accidental R2 downgrade ---
+cp "$tmp_dir/older-6.json" "$tmp_dir/latest-7.json"
+if PATH="$tmp_dir/mock-bin:$PATH" \
+   UPDATE_API_BASE="http://127.0.0.1:$port" \
+   FORCE_RELEASE="false" \
+   RELEASE_TAG="claude-app-v6.28899.6" \
+   R2_PUBLIC_BASE_URL="http://127.0.0.1:$port/r2-503" \
+   MANIFEST_PATH="$tmp_dir/probed-r2-503.json" \
+     bash "$repo_root/scripts/probe-release.sh" 2>/dev/null; then
+  echo "Expected HTTP 503 on R2 live manifest lookup to fail closed" >&2
+  exit 1
+fi
+
+# --- Case 13: Per-platform downgrade guard (macOS stays 6.28899.6 while Windows x64 on GitHub Latest is 6.28900.0) ---
+jq '.sources.windows.x64.version = "6.28900.0" | .sources.windows.x64.url = "http://127.0.0.1:1/Claude-win-x64-6.28900.0.msix"' \
+  "$tmp_dir/probed-manifest.json" > "$tmp_dir/latest-7.json"
+win_downgrade_out="$(
+  PATH="$tmp_dir/mock-bin:$PATH" \
+  UPDATE_API_BASE="http://127.0.0.1:$port" \
+  FORCE_RELEASE="false" \
+  RELEASE_TAG="claude-app-v6.28899.6" \
+  R2_PUBLIC_BASE_URL="http://127.0.0.1:$port/missing-r2" \
+  MANIFEST_PATH="$tmp_dir/probed-win-downgrade.json" \
+    bash "$repo_root/scripts/probe-release.sh"
+)"
+grep -Fxq "should_release=false" <<<"$win_downgrade_out"
+grep -Fxq "repair_r2_only=false" <<<"$win_downgrade_out"
 
 echo "probe GCS header + download-artifacts verification fixture PASS"
