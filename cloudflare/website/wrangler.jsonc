@@ -1,0 +1,27 @@
+{
+  // Landing website at https://claudeapp.agentsmirror.com/
+  // Coexists cleanly with claude-app-mirror-download-router:
+  //   claudeapp.agentsmirror.com/latest/* -> claude-app-mirror-download-router
+  //   claudeapp.agentsmirror.com/stats/*  -> claude-app-mirror-download-router
+  //   claudeapp.agentsmirror.com/*        -> this worker (static ./dist + /api/status.json)
+  "name": "claude-app-mirror-website",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-06-04",
+  "workers_dev": false,
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "r2_buckets": [
+    { "binding": "MIRROR_BUCKET", "bucket_name": "claude-app-mirror" }
+  ],
+  "routes": [
+    {
+      "pattern": "claudeapp.agentsmirror.com/*",
+      "zone_id": "a5bae9b722f3c5fe1a24aaebe7a8e663"
+    }
+  ]
+}

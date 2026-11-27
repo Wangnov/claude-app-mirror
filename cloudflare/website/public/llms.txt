@@ -1,0 +1,42 @@
+# claude-app-mirror (https://claudeapp.agentsmirror.com/)
+
+> Verbatim, SHA-256-verifiable open-source public-interest mirror of official Anthropic Claude Desktop installers (`macOS Universal DMG`, `Windows x64/ARM64 offline MSIX`, `Linux x64/ARM64 deb`). Probed every 15 minutes via public GitHub Actions; part of the `agentsmirror.com` mirror infrastructure maintained by **Wangnov** (`https://github.com/Wangnov`).
+
+## Key Facts
+- **Website (Chinese)**: https://claudeapp.agentsmirror.com/
+- **Website (English)**: https://claudeapp.agentsmirror.com/en/
+- **Live Status JSON**: https://claudeapp.agentsmirror.com/api/status.json
+- **Release Manifest JSON**: https://claudeapp.agentsmirror.com/latest/manifest
+- **SHA-256 Checksums**: https://claudeapp.agentsmirror.com/latest/checksums
+- **Source & GitHub Releases**: https://github.com/Wangnov/claude-app-mirror
+- **Umbrella Network**: https://agentsmirror.com/ (also hosts `https://codexapp.agentsmirror.com/` and `https://uv.agentsmirror.com`)
+- **Affiliation**: Independent non-commercial open-source mirror; NOT affiliated with or endorsed by Anthropic.
+
+## Why Offline Windows `.msix` Instead of `ClaudeSetup.exe`?
+Anthropic's default Windows download (`ClaudeSetup.exe`, ~7 MB) is an online bootstrapper whose signed binary hardcodes Google Cloud Storage (`downloads.claude.ai`) to fetch the real ~300 MB MSIX payload at install time. Because `downloads.claude.ai` is blocked or severely throttled in Mainland China, `ClaudeSetup.exe` fails mid-install. `claude-app-mirror` directly mirrors Anthropic's official signed, self-contained `.msix` installers (`Claude-win-x64.msix` and `Claude-win-arm64.msix`) so Windows 10/11 users can install completely offline.
+
+## Direct Stable Download Endpoints (HTTP 302 Geo-Steered: CN High-Speed S3 / Global R2)
+Use `-fL` with `curl` to follow the 302 redirect:
+- **macOS Universal (Apple Silicon + Intel `.dmg`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/mac
+  - CLI: `curl -fL -o Claude-mac-universal.dmg https://claudeapp.agentsmirror.com/latest/mac`
+- **Windows x64 (Self-contained `.msix`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/win-x64
+  - CLI: `curl -fL -o Claude-win-x64.msix https://claudeapp.agentsmirror.com/latest/win-x64`
+  - Install: Double-click in Explorer (App Installer) or run `Add-AppxPackage .\Claude-win-x64.msix` in PowerShell.
+- **Windows ARM64 (Self-contained `.msix`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/win-arm64
+  - CLI: `curl -fL -o Claude-win-arm64.msix https://claudeapp.agentsmirror.com/latest/win-arm64`
+- **Linux x64 (Ubuntu 22.04+ / Debian 12+ `.deb`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/linux-x64
+  - CLI: `curl -fL -o Claude-linux-x64.deb https://claudeapp.agentsmirror.com/latest/linux-x64`
+  - Tip for Mainland China: Before `sudo apt install ./Claude-linux-x64.deb`, write `CLAUDE_DESKTOP_ADD_REPO="false"` to `/etc/default/claude-desktop` so `apt update` does not hang trying to reach `downloads.claude.ai`.
+- **Linux ARM64 (`.deb`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/linux-arm64
+  - CLI: `curl -fL -o Claude-linux-arm64.deb https://claudeapp.agentsmirror.com/latest/linux-arm64`
+- **SHA-256 Checksums (`SHA256SUMS.txt`)**:
+  - URL: https://claudeapp.agentsmirror.com/latest/checksums
+  - CLI: `curl -fL -o SHA256SUMS.txt https://claudeapp.agentsmirror.com/latest/checksums`
+
+## Integrity & Anti-Scam Notice
+100% free and open source. Zero binary modifications, zero wrappers, zero WeChat QR/password gates, and zero paid download tiers. Commercial redistribution or embedding inside paid/recharge tools is strictly prohibited (`https://github.com/Wangnov/claude-app-mirror/blob/main/TERMS.md`).
